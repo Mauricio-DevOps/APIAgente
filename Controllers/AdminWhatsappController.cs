@@ -35,6 +35,25 @@ public sealed class AdminWhatsappController : ControllerBase
         [FromServices] WhatsappRepository repository,
         CancellationToken cancellationToken)
     {
+        return await ListMessagesCoreAsync(storeId, phoneNumber, repository, cancellationToken);
+    }
+
+    [HttpGet("messages")]
+    public async Task<IActionResult> ListMessagesByQuery(
+        [FromQuery] string? storeId,
+        [FromQuery] string? phoneNumber,
+        [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        return await ListMessagesCoreAsync(storeId, phoneNumber, repository, cancellationToken);
+    }
+
+    private async Task<IActionResult> ListMessagesCoreAsync(
+        string? storeId,
+        string? phoneNumber,
+        WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(storeId) || string.IsNullOrWhiteSpace(phoneNumber))
         {
             return Problem(
@@ -56,6 +75,25 @@ public sealed class AdminWhatsappController : ControllerBase
         [FromRoute] string phoneNumber,
         [FromBody] WhatsappContactAgentUpdateRequest request,
         [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        return await UpdateAgentCoreAsync(phoneNumber, request, repository, cancellationToken);
+    }
+
+    [HttpPatch("agent")]
+    public async Task<IActionResult> UpdateAgentByQuery(
+        [FromQuery] string? phoneNumber,
+        [FromBody] WhatsappContactAgentUpdateRequest request,
+        [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        return await UpdateAgentCoreAsync(phoneNumber, request, repository, cancellationToken);
+    }
+
+    private async Task<IActionResult> UpdateAgentCoreAsync(
+        string? phoneNumber,
+        WhatsappContactAgentUpdateRequest request,
+        WhatsappRepository repository,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(phoneNumber) || string.IsNullOrWhiteSpace(request.StoreId))
@@ -82,6 +120,25 @@ public sealed class AdminWhatsappController : ControllerBase
         [FromServices] WhatsappRepository repository,
         CancellationToken cancellationToken)
     {
+        return await ResetConversationCoreAsync(storeId, phoneNumber, repository, cancellationToken);
+    }
+
+    [HttpPost("reset")]
+    public async Task<IActionResult> ResetConversationByQuery(
+        [FromQuery] string? storeId,
+        [FromQuery] string? phoneNumber,
+        [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        return await ResetConversationCoreAsync(storeId, phoneNumber, repository, cancellationToken);
+    }
+
+    private async Task<IActionResult> ResetConversationCoreAsync(
+        string? storeId,
+        string? phoneNumber,
+        WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(storeId) || string.IsNullOrWhiteSpace(phoneNumber))
         {
             return Problem(
@@ -104,6 +161,27 @@ public sealed class AdminWhatsappController : ControllerBase
         [FromBody] WhatsappManualMessageRequest request,
         [FromServices] WhatsappRepository repository,
         [FromServices] TwilioMessageClient twilioMessageClient,
+        CancellationToken cancellationToken)
+    {
+        return await SendMessageCoreAsync(phoneNumber, request, repository, twilioMessageClient, cancellationToken);
+    }
+
+    [HttpPost("messages")]
+    public async Task<IActionResult> SendMessageByQuery(
+        [FromQuery] string? phoneNumber,
+        [FromBody] WhatsappManualMessageRequest request,
+        [FromServices] WhatsappRepository repository,
+        [FromServices] TwilioMessageClient twilioMessageClient,
+        CancellationToken cancellationToken)
+    {
+        return await SendMessageCoreAsync(phoneNumber, request, repository, twilioMessageClient, cancellationToken);
+    }
+
+    private async Task<IActionResult> SendMessageCoreAsync(
+        string? phoneNumber,
+        WhatsappManualMessageRequest request,
+        WhatsappRepository repository,
+        TwilioMessageClient twilioMessageClient,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(phoneNumber) ||
