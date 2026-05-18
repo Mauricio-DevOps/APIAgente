@@ -26,6 +26,7 @@ public sealed class WhatsappChatService
     private readonly PromptApiClient _promptApiClient;
     private readonly OrderRegistrationService _orderRegistrationService;
     private readonly OrderConsultationService _orderConsultationService;
+    private readonly CustomerHistoryConsultationService _customerHistoryConsultationService;
     private readonly HumanHandoffService _humanHandoffService;
     private readonly AgentFeedbackService _agentFeedbackService;
 
@@ -34,6 +35,7 @@ public sealed class WhatsappChatService
         PromptApiClient promptApiClient,
         OrderRegistrationService orderRegistrationService,
         OrderConsultationService orderConsultationService,
+        CustomerHistoryConsultationService customerHistoryConsultationService,
         HumanHandoffService humanHandoffService,
         AgentFeedbackService agentFeedbackService)
     {
@@ -41,6 +43,7 @@ public sealed class WhatsappChatService
         _promptApiClient = promptApiClient;
         _orderRegistrationService = orderRegistrationService;
         _orderConsultationService = orderConsultationService;
+        _customerHistoryConsultationService = customerHistoryConsultationService;
         _humanHandoffService = humanHandoffService;
         _agentFeedbackService = agentFeedbackService;
     }
@@ -70,6 +73,17 @@ public sealed class WhatsappChatService
         if (promptId is null)
         {
             throw new InvalidOperationException($"No prompt mapping was found for storeId '{storeId}'.");
+        }
+
+        var pendingActionResponse = await _customerHistoryConsultationService.TryHandlePendingActionAsync(
+            storeId,
+            phoneNumber,
+            message,
+            sourceMessageId,
+            cancellationToken);
+        if (pendingActionResponse is not null)
+        {
+            return pendingActionResponse;
         }
 
         var conversation = await _repository.GetConversationAsync(storeId, phoneNumber, cancellationToken);
@@ -159,6 +173,14 @@ public sealed class WhatsappChatService
                     storeId,
                     phoneNumber,
                     outputTextResponse,
+                    cancellationToken);
+
+            case 7:
+                return await _customerHistoryConsultationService.ConsultarHistoricoClienteAsync(
+                    storeId,
+                    phoneNumber,
+                    outputTextResponse.ConsultaCliente,
+                    outputTextResponse.Texto,
                     cancellationToken);
 
             default:
@@ -600,7 +622,13 @@ public sealed class WhatsappChatService
                 throw new ExternalApiException(StatusCodes.Status502BadGateway, "Prompt API returned an invalid outputText.");
             }
 
-            return new PromptOutputTextResponse(payload.Texto, payload.Tipo.Value, payload.Pedido, payload.Feedback, payload.Cadastro);
+            return new PromptOutputTextResponse(
+                payload.Texto,
+                payload.Tipo.Value,
+                payload.Pedido,
+                payload.Feedback,
+                payload.Cadastro,
+                payload.ConsultaCliente);
         }
         catch (JsonException ex)
         {
@@ -615,7 +643,8 @@ public sealed class WhatsappChatService
         int? Tipo,
         PromptOrderPayload? Pedido,
         PromptFeedbackPayload? Feedback,
-        PromptCustomerRegistrationPayload? Cadastro);
+        PromptCustomerRegistrationPayload? Cadastro,
+        PromptCustomerHistoryQueryPayload? ConsultaCliente);
 
     private sealed record CustomerContext(
         CustomerResponse? Customer,

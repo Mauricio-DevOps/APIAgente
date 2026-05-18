@@ -29,7 +29,8 @@ public sealed record PromptOutputTextResponse(
     int Tipo,
     PromptOrderPayload? Pedido,
     PromptFeedbackPayload? Feedback,
-    PromptCustomerRegistrationPayload? Cadastro);
+    PromptCustomerRegistrationPayload? Cadastro,
+    PromptCustomerHistoryQueryPayload? ConsultaCliente);
 
 public sealed record PromptFeedbackPayload(
     string? Categoria,
@@ -56,6 +57,12 @@ public sealed record PromptCustomerRegistrationCustomerPayload(
     string? Email,
     string? Endereco);
 
+public sealed record PromptCustomerHistoryQueryPayload(
+    string? Intencao,
+    string? Acao,
+    string? ProdutoReferencia,
+    int? Limite);
+
 public static class CustomerRegistrationActions
 {
     public const string SolicitarDados = "SOLICITAR_DADOS";
@@ -66,6 +73,64 @@ public static class CustomerRegistrationActions
         return string.Equals(value, SolicitarDados, StringComparison.OrdinalIgnoreCase) ||
             string.Equals(value, SalvarCadastro, StringComparison.OrdinalIgnoreCase);
     }
+}
+
+public static class CustomerHistoryQueryIntentions
+{
+    public const string ItensJaComprados = "ITENS_JA_COMPRADOS";
+    public const string ItemMaisComprado = "ITEM_MAIS_COMPRADO";
+    public const string ItemMaisCaroComprado = "ITEM_MAIS_CARO_COMPRADO";
+    public const string UltimoPedido = "ULTIMO_PEDIDO";
+    public const string ReplicarUltimoPedido = "REPLICAR_ULTIMO_PEDIDO";
+    public const string RecomprarItemHistorico = "RECOMPRAR_ITEM_HISTORICO";
+    public const string VerificarSeJaComprouItem = "VERIFICAR_SE_JA_COMPROU_ITEM";
+    public const string ResumoHistorico = "RESUMO_HISTORICO";
+
+    public static string Normalize(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().ToUpperInvariant();
+
+        return normalized switch
+        {
+            ItensJaComprados => ItensJaComprados,
+            ItemMaisComprado => ItemMaisComprado,
+            ItemMaisCaroComprado => ItemMaisCaroComprado,
+            UltimoPedido => UltimoPedido,
+            ReplicarUltimoPedido => ReplicarUltimoPedido,
+            RecomprarItemHistorico => RecomprarItemHistorico,
+            VerificarSeJaComprouItem => VerificarSeJaComprouItem,
+            ResumoHistorico => ResumoHistorico,
+            _ => ResumoHistorico
+        };
+    }
+}
+
+public static class CustomerHistoryQueryActions
+{
+    public const string Responder = "RESPONDER";
+    public const string PedirConfirmacaoRecompra = "PEDIR_CONFIRMACAO_RECOMPRA";
+
+    public static string Normalize(string? value)
+    {
+        return string.Equals(value?.Trim(), PedirConfirmacaoRecompra, StringComparison.OrdinalIgnoreCase)
+            ? PedirConfirmacaoRecompra
+            : Responder;
+    }
+}
+
+public static class PendingCustomerActionTypes
+{
+    public const string Reorder = "REORDER";
+}
+
+public static class PendingCustomerActionStatuses
+{
+    public const string Active = "Active";
+    public const string Completed = "Completed";
+    public const string Cancelled = "Cancelled";
+    public const string Expired = "Expired";
 }
 
 public sealed record ProductUpsertRequest(
@@ -817,6 +882,34 @@ public sealed record ActiveOrderItemData(
     long? TotalPriceCents,
     string? Observation,
     string MatchStatus);
+
+public sealed record CustomerPurchasedItemData(
+    string ProductName,
+    string? ProductId,
+    int TotalQuantity,
+    int OrderCount,
+    long TotalSpentCents,
+    long? MaxUnitPriceCents,
+    string LastPurchasedAtUtc);
+
+public sealed record CustomerHistoricalOrderItemData(
+    string ProductName,
+    string? ProductId,
+    int Quantity,
+    long? UnitPriceCents,
+    long? TotalPriceCents,
+    string? Observation,
+    string PurchasedAtUtc);
+
+public sealed record PendingCustomerAction(
+    string Id,
+    string StoreId,
+    string PhoneNumber,
+    string ActionType,
+    string PayloadJson,
+    string Status,
+    string CreatedAtUtc,
+    string ExpiresAtUtc);
 
 public sealed record OrderRegistrationData(
     string Id,

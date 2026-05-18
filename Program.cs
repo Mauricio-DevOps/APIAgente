@@ -18,6 +18,7 @@ builder.Services.AddHttpClient<TwilioMessageClient>(client =>
 builder.Services.AddSingleton<WhatsappRepository>();
 builder.Services.AddSingleton<OrderRegistrationService>();
 builder.Services.AddSingleton<OrderConsultationService>();
+builder.Services.AddSingleton<CustomerHistoryConsultationService>();
 builder.Services.AddSingleton<HumanHandoffService>();
 builder.Services.AddSingleton<WhatsappChatService>();
 builder.Services.AddSingleton<AgentService>();

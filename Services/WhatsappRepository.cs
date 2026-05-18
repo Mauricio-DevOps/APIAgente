@@ -206,6 +206,18 @@ public sealed class WhatsappRepository
                 CompletedAtUtc TEXT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS WhatsappPendingCustomerActions (
+                Id TEXT PRIMARY KEY,
+                StoreId TEXT NOT NULL,
+                PhoneNumber TEXT NOT NULL,
+                ActionType TEXT NOT NULL,
+                PayloadJson TEXT NOT NULL,
+                Status TEXT NOT NULL,
+                CreatedAtUtc TEXT NOT NULL,
+                ExpiresAtUtc TEXT NOT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS AgentPersonaSettings (
                 StoreId TEXT PRIMARY KEY,
                 Tone TEXT NOT NULL,
@@ -402,6 +414,7 @@ public sealed class WhatsappRepository
             CREATE INDEX IF NOT EXISTS IX_AgentFeedbackSolicitations_ResponseLookup ON AgentFeedbackSolicitations (StoreId, PhoneNumber, Status, SentAtUtc);
             CREATE INDEX IF NOT EXISTS IX_WhatsappConversationMessages_Store_Phone_Created ON WhatsappConversationMessages (StoreId, PhoneNumber, CreatedAtUtc);
             CREATE INDEX IF NOT EXISTS IX_WhatsappConversationMessages_Store_Created ON WhatsappConversationMessages (StoreId, CreatedAtUtc);
+            CREATE INDEX IF NOT EXISTS IX_WhatsappPendingCustomerActions_Lookup ON WhatsappPendingCustomerActions (StoreId, PhoneNumber, ActionType, Status, CreatedAtUtc);
             """;
 
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -2616,7 +2629,7 @@ public sealed class WhatsappRepository
             .GroupBy(customer => customer.PhoneNumber, StringComparer.Ordinal)
             .Select(group => new AgentCampaignCustomerResponse(
                 group.Key,
-                group.Max(customer => customer.LastOrderAtUtc),
+                group.Max(customer => customer.LastOrderAtUtc) ?? string.Empty,
                 group.Sum(customer => customer.TotalOrders)))
             .OrderByDescending(customer => customer.LastOrderAtUtc, StringComparer.Ordinal)
             .ThenBy(customer => customer.PhoneNumber, StringComparer.Ordinal)
@@ -3102,6 +3115,343 @@ public sealed class WhatsappRepository
         command.Parameters.AddWithValue("@limit", Math.Max(1, limit));
 
         return await ReadOrderDataAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<CustomerPurchasedItemData>> GetCustomerPurchasedItemsAsync(
+        string storeId,
+        string phoneNumber,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "o.PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            SELECT ProductName,
+                   MIN(ProductId) AS ProductId,
+                   COALESCE(SUM(Quantity), 0) AS TotalQuantity,
+                   COUNT(DISTINCT OrderId) AS OrderCount,
+                   COALESCE(SUM(COALESCE(TotalPriceCents, 0)), 0) AS TotalSpentCents,
+                   MAX(UnitPriceCents) AS MaxUnitPriceCents,
+                   MAX(CreatedAtUtc) AS LastPurchasedAtUtc
+            FROM (
+                SELECT o.Id AS OrderId,
+                       o.CreatedAtUtc,
+                       oi.ProductId,
+                       COALESCE(NULLIF(oi.ProductNameSnapshot, ''), oi.RequestedProductName) AS ProductName,
+                       oi.Quantity,
+                       oi.UnitPriceCents,
+                       oi.TotalPriceCents
+                FROM Orders o
+                INNER JOIN OrderItems oi ON oi.OrderId = o.Id
+                WHERE o.StoreId = @storeId
+                  AND {phoneFilter}
+                  AND o.Status = @status
+            ) purchased
+            WHERE ProductName IS NOT NULL
+              AND TRIM(ProductName) <> ''
+            GROUP BY ProductName
+            ORDER BY TotalQuantity DESC, TotalSpentCents DESC, LastPurchasedAtUtc DESC, ProductName
+            LIMIT @limit;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@status", OrderStatuses.Concluido);
+        command.Parameters.AddWithValue("@limit", Math.Clamp(limit, 1, 200));
+
+        var items = new List<CustomerPurchasedItemData>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            items.Add(new CustomerPurchasedItemData(
+                reader.GetString(0),
+                reader.IsDBNull(1) ? null : reader.GetString(1),
+                Convert.ToInt32(reader.GetInt64(2)),
+                Convert.ToInt32(reader.GetInt64(3)),
+                reader.GetInt64(4),
+                reader.IsDBNull(5) ? null : reader.GetInt64(5),
+                reader.GetString(6)));
+        }
+
+        return items;
+    }
+
+    public async Task<CustomerHistoricalOrderItemData?> GetCustomerMostExpensivePurchasedItemAsync(
+        string storeId,
+        string phoneNumber,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "o.PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            SELECT COALESCE(NULLIF(oi.ProductNameSnapshot, ''), oi.RequestedProductName) AS ProductName,
+                   oi.ProductId,
+                   oi.Quantity,
+                   oi.UnitPriceCents,
+                   oi.TotalPriceCents,
+                   oi.Observation,
+                   o.CreatedAtUtc
+            FROM Orders o
+            INNER JOIN OrderItems oi ON oi.OrderId = o.Id
+            WHERE o.StoreId = @storeId
+              AND {phoneFilter}
+              AND o.Status = @status
+              AND TRIM(COALESCE(NULLIF(oi.ProductNameSnapshot, ''), oi.RequestedProductName)) <> ''
+            ORDER BY COALESCE(
+                         oi.UnitPriceCents,
+                         CASE
+                             WHEN oi.Quantity > 0 AND oi.TotalPriceCents IS NOT NULL THEN oi.TotalPriceCents / oi.Quantity
+                             ELSE NULL
+                         END,
+                         0
+                     ) DESC,
+                     COALESCE(oi.TotalPriceCents, 0) DESC,
+                     o.CreatedAtUtc DESC,
+                     oi.Id DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@status", OrderStatuses.Concluido);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new CustomerHistoricalOrderItemData(
+            reader.GetString(0),
+            reader.IsDBNull(1) ? null : reader.GetString(1),
+            reader.GetInt32(2),
+            reader.IsDBNull(3) ? null : reader.GetInt64(3),
+            reader.IsDBNull(4) ? null : reader.GetInt64(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.GetString(6));
+    }
+
+    public async Task<ActiveOrderData?> GetLastCompletedOrderAsync(
+        string storeId,
+        string phoneNumber,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "o.PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            WITH RecentOrders AS (
+                SELECT o.Id
+                FROM Orders o
+                WHERE o.StoreId = @storeId
+                  AND {phoneFilter}
+                  AND o.Status = @status
+                ORDER BY o.CreatedAtUtc DESC, o.Id DESC
+                LIMIT 1
+            )
+            SELECT o.Id,
+                   o.Status,
+                   o.SaleType,
+                   o.TotalCents,
+                   o.CreatedAtUtc,
+                   o.UpdatedAtUtc,
+                   oi.RequestedProductName,
+                   oi.ProductNameSnapshot,
+                   oi.Quantity,
+                   oi.UnitPriceCents,
+                   oi.TotalPriceCents,
+                   oi.Observation,
+                   oi.MatchStatus
+            FROM Orders o
+            INNER JOIN RecentOrders ro ON ro.Id = o.Id
+            LEFT JOIN OrderItems oi ON oi.OrderId = o.Id
+            ORDER BY o.CreatedAtUtc DESC, o.Id DESC, oi.CreatedAtUtc, oi.Id;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@status", OrderStatuses.Concluido);
+
+        var orders = await ReadOrderDataAsync(command, cancellationToken);
+        return orders.FirstOrDefault();
+    }
+
+    public async Task<int> CountCustomerCompletedOrdersAsync(
+        string storeId,
+        string phoneNumber,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            SELECT COUNT(1)
+            FROM Orders
+            WHERE StoreId = @storeId
+              AND {phoneFilter}
+              AND Status = @status;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@status", OrderStatuses.Concluido);
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken) ?? 0);
+    }
+
+    public async Task SavePendingCustomerActionAsync(
+        PendingCustomerAction action,
+        CancellationToken cancellationToken)
+    {
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(action.PhoneNumber);
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+
+        var cancelCommand = connection.CreateCommand();
+        cancelCommand.Transaction = transaction;
+        var phoneFilter = AddPhoneStorageCandidateParameters(cancelCommand, "PhoneNumber", "phone", normalizedPhoneNumber);
+        cancelCommand.CommandText =
+            $"""
+            UPDATE WhatsappPendingCustomerActions
+            SET Status = @cancelledStatus,
+                UpdatedAtUtc = @updatedAtUtc
+            WHERE StoreId = @storeId
+              AND {phoneFilter}
+              AND ActionType = @actionType
+              AND Status = @activeStatus;
+            """;
+        cancelCommand.Parameters.AddWithValue("@storeId", action.StoreId.Trim());
+        cancelCommand.Parameters.AddWithValue("@actionType", action.ActionType);
+        cancelCommand.Parameters.AddWithValue("@activeStatus", PendingCustomerActionStatuses.Active);
+        cancelCommand.Parameters.AddWithValue("@cancelledStatus", PendingCustomerActionStatuses.Cancelled);
+        cancelCommand.Parameters.AddWithValue("@updatedAtUtc", action.CreatedAtUtc);
+        await cancelCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        var insertCommand = connection.CreateCommand();
+        insertCommand.Transaction = transaction;
+        insertCommand.CommandText =
+            """
+            INSERT INTO WhatsappPendingCustomerActions
+                (Id, StoreId, PhoneNumber, ActionType, PayloadJson, Status, CreatedAtUtc, ExpiresAtUtc, UpdatedAtUtc)
+            VALUES
+                (@id, @storeId, @phoneNumber, @actionType, @payloadJson, @status, @createdAtUtc, @expiresAtUtc, @createdAtUtc);
+            """;
+        insertCommand.Parameters.AddWithValue("@id", action.Id);
+        insertCommand.Parameters.AddWithValue("@storeId", action.StoreId.Trim());
+        insertCommand.Parameters.AddWithValue("@phoneNumber", normalizedPhoneNumber);
+        insertCommand.Parameters.AddWithValue("@actionType", action.ActionType);
+        insertCommand.Parameters.AddWithValue("@payloadJson", action.PayloadJson);
+        insertCommand.Parameters.AddWithValue("@status", action.Status);
+        insertCommand.Parameters.AddWithValue("@createdAtUtc", action.CreatedAtUtc);
+        insertCommand.Parameters.AddWithValue("@expiresAtUtc", action.ExpiresAtUtc);
+        await insertCommand.ExecuteNonQueryAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+    }
+
+    public async Task<PendingCustomerAction?> GetOpenPendingCustomerActionAsync(
+        string storeId,
+        string phoneNumber,
+        string actionType,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            SELECT Id,
+                   StoreId,
+                   PhoneNumber,
+                   ActionType,
+                   PayloadJson,
+                   Status,
+                   CreatedAtUtc,
+                   ExpiresAtUtc
+            FROM WhatsappPendingCustomerActions
+            WHERE StoreId = @storeId
+              AND {phoneFilter}
+              AND ActionType = @actionType
+              AND Status = @status
+            ORDER BY CreatedAtUtc DESC
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@actionType", actionType);
+        command.Parameters.AddWithValue("@status", PendingCustomerActionStatuses.Active);
+
+        PendingCustomerAction? action = null;
+        await using (var reader = await command.ExecuteReaderAsync(cancellationToken))
+        {
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                action = new PendingCustomerAction(
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.GetString(4),
+                    reader.GetString(5),
+                    reader.GetString(6),
+                    reader.GetString(7));
+            }
+        }
+
+        if (action is null)
+        {
+            return null;
+        }
+
+        if (DateTimeOffset.TryParse(
+                action.ExpiresAtUtc,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.RoundtripKind,
+                out var expiresAt) &&
+            expiresAt <= DateTimeOffset.UtcNow)
+        {
+            await UpdatePendingCustomerActionStatusAsync(
+                connection,
+                action.Id,
+                PendingCustomerActionStatuses.Expired,
+                cancellationToken);
+            return null;
+        }
+
+        return action;
+    }
+
+    public async Task CompletePendingCustomerActionAsync(string id, CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await UpdatePendingCustomerActionStatusAsync(
+            connection,
+            id,
+            PendingCustomerActionStatuses.Completed,
+            cancellationToken);
+    }
+
+    public async Task CancelPendingCustomerActionAsync(string id, CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        await UpdatePendingCustomerActionStatusAsync(
+            connection,
+            id,
+            PendingCustomerActionStatuses.Cancelled,
+            cancellationToken);
     }
 
     private static async Task<IReadOnlyList<ActiveOrderData>> ReadOrderDataAsync(
@@ -4561,6 +4911,26 @@ public sealed class WhatsappRepository
         }
 
         return $"{columnName} IN ({string.Join(", ", parameterNames)})";
+    }
+
+    private static async Task UpdatePendingCustomerActionStatusAsync(
+        NpgsqlConnection connection,
+        string id,
+        string status,
+        CancellationToken cancellationToken)
+    {
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE WhatsappPendingCustomerActions
+            SET Status = @status,
+                UpdatedAtUtc = @updatedAtUtc
+            WHERE Id = @id;
+            """;
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@status", status);
+        command.Parameters.AddWithValue("@updatedAtUtc", DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture));
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task<IReadOnlyList<WhatsappConversationCustomerLookup>> ReadWhatsappConversationCustomerLookupsAsync(
