@@ -141,10 +141,11 @@ public sealed class AdminCustomersController : ControllerBase
         var storeId = request.StoreId.Trim();
         var customers = await repository.ListCustomersAsync(storeId, cancellationToken);
         var customersById = customers.ToDictionary(customer => customer.Id, StringComparer.Ordinal);
-        var customerIdsByPhone = customers.ToDictionary(
-            customer => customer.ClienteTelefoneCelular.Trim(),
-            customer => customer.Id,
-            StringComparer.Ordinal);
+        var customerIdsByPhone = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var customer in customers)
+        {
+            AddCustomerPhoneLookup(customerIdsByPhone, customer.ClienteTelefoneCelular, customer.Id);
+        }
         var customerIdsByCpfCnpj = customers
             .Where(customer => !string.IsNullOrWhiteSpace(customer.CpfCnpj))
             .ToDictionary(
@@ -178,11 +179,11 @@ public sealed class AdminCustomersController : ControllerBase
                 continue;
             }
 
-            var phone = row.ClienteTelefoneCelular.Trim();
+            var phone = PhoneNumberNormalizer.ToBrazilNationalPhone(row.ClienteTelefoneCelular);
             var cpfCnpj = NormalizeOptionalText(row.CpfCnpj);
             if (string.Equals(row.Action, CustomerImportActions.Create, StringComparison.OrdinalIgnoreCase))
             {
-                if (customerIdsByPhone.ContainsKey(phone))
+                if (HasCustomerPhone(customerIdsByPhone, phone))
                 {
                     errors.Add(new CustomerImportErrorResponse(row.RowNumber, "Ja existe um cliente cadastrado com este telefone."));
                     continue;
@@ -205,7 +206,7 @@ public sealed class AdminCustomersController : ControllerBase
                 }
 
                 customersById[createResult.Customer.Id] = createResult.Customer;
-                customerIdsByPhone[createResult.Customer.ClienteTelefoneCelular.Trim()] = createResult.Customer.Id;
+                AddCustomerPhoneLookup(customerIdsByPhone, createResult.Customer.ClienteTelefoneCelular, createResult.Customer.Id);
                 if (!string.IsNullOrWhiteSpace(createResult.Customer.CpfCnpj))
                 {
                     customerIdsByCpfCnpj[createResult.Customer.CpfCnpj!.Trim()] = createResult.Customer.Id;
@@ -240,11 +241,11 @@ public sealed class AdminCustomersController : ControllerBase
                 continue;
             }
 
-            RemoveCustomerLookup(customerIdsByPhone, existingCustomer.ClienteTelefoneCelular, existingCustomer.Id);
+            RemoveCustomerPhoneLookup(customerIdsByPhone, existingCustomer.ClienteTelefoneCelular, existingCustomer.Id);
             RemoveCustomerLookup(customerIdsByCpfCnpj, existingCustomer.CpfCnpj, existingCustomer.Id);
 
             customersById[updateResult.Customer.Id] = updateResult.Customer;
-            customerIdsByPhone[updateResult.Customer.ClienteTelefoneCelular.Trim()] = updateResult.Customer.Id;
+            AddCustomerPhoneLookup(customerIdsByPhone, updateResult.Customer.ClienteTelefoneCelular, updateResult.Customer.Id);
             if (!string.IsNullOrWhiteSpace(updateResult.Customer.CpfCnpj))
             {
                 customerIdsByCpfCnpj[updateResult.Customer.CpfCnpj!.Trim()] = updateResult.Customer.Id;
@@ -258,7 +259,8 @@ public sealed class AdminCustomersController : ControllerBase
 
     private ObjectResult? ValidateCustomerRequest(CustomerUpsertRequest request)
     {
-        if (string.IsNullOrWhiteSpace(request.StoreId) || string.IsNullOrWhiteSpace(request.ClienteTelefoneCelular))
+        if (string.IsNullOrWhiteSpace(request.StoreId) ||
+            string.IsNullOrWhiteSpace(PhoneNumberNormalizer.ToBrazilNationalPhone(request.ClienteTelefoneCelular)))
         {
             return Problem(
                 title: "Invalid customer",
@@ -280,7 +282,7 @@ public sealed class AdminCustomersController : ControllerBase
 
     private static string? ValidateImportRow(CustomerImportRowRequest row)
     {
-        if (string.IsNullOrWhiteSpace(row.ClienteTelefoneCelular))
+        if (string.IsNullOrWhiteSpace(PhoneNumberNormalizer.ToBrazilNationalPhone(row.ClienteTelefoneCelular)))
         {
             return "Informe o telefone celular do cliente.";
         }
@@ -302,7 +304,7 @@ public sealed class AdminCustomersController : ControllerBase
             NormalizeOptionalText(row.CpfCnpj),
             NormalizeOptionalText(row.ClienteEmail),
             NormalizeOptionalText(row.ClienteEndereco),
-            row.ClienteTelefoneCelular.Trim());
+            PhoneNumberNormalizer.ToBrazilNationalPhone(row.ClienteTelefoneCelular));
     }
 
     private static CustomerUpsertRequest NormalizeRequest(CustomerUpsertRequest request)
@@ -313,7 +315,37 @@ public sealed class AdminCustomersController : ControllerBase
             NormalizeOptionalText(request.CpfCnpj),
             NormalizeOptionalText(request.ClienteEmail),
             NormalizeOptionalText(request.ClienteEndereco),
-            request.ClienteTelefoneCelular.Trim());
+            PhoneNumberNormalizer.ToBrazilNationalPhone(request.ClienteTelefoneCelular));
+    }
+
+    private static bool HasCustomerPhone(Dictionary<string, string> lookup, string phone)
+    {
+        return PhoneNumberNormalizer.GetLookupKeys(phone).Any(lookup.ContainsKey);
+    }
+
+    private static void AddCustomerPhoneLookup(Dictionary<string, string> lookup, string phone, string customerId)
+    {
+        foreach (var key in PhoneNumberNormalizer.GetLookupKeys(phone))
+        {
+            lookup[key] = customerId;
+        }
+    }
+
+    private static void RemoveCustomerPhoneLookup(Dictionary<string, string> lookup, string? key, string customerId)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        foreach (var normalizedKey in PhoneNumberNormalizer.GetLookupKeys(key))
+        {
+            if (lookup.TryGetValue(normalizedKey, out var mappedCustomerId) &&
+                string.Equals(mappedCustomerId, customerId, StringComparison.Ordinal))
+            {
+                lookup.Remove(normalizedKey);
+            }
+        }
     }
 
     private static void RemoveCustomerLookup(Dictionary<string, string> lookup, string? key, string customerId)

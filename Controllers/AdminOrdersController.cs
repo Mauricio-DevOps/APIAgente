@@ -142,10 +142,11 @@ public sealed class AdminOrdersController : ControllerBase
                 cancellationToken),
             StringComparer.Ordinal);
         var customers = await repository.ListCustomersAsync(storeId, cancellationToken);
-        var customersByPhone = customers.ToDictionary(
-            customer => customer.ClienteTelefoneCelular.Trim(),
-            customer => customer,
-            StringComparer.Ordinal);
+        var customersByPhone = new Dictionary<string, CustomerResponse>(StringComparer.Ordinal);
+        foreach (var customer in customers)
+        {
+            AddCustomerPhoneLookup(customersByPhone, customer.ClienteTelefoneCelular, customer);
+        }
         var customersByCpfCnpj = customers
             .Where(customer => !string.IsNullOrWhiteSpace(customer.CpfCnpj))
             .ToDictionary(
@@ -248,8 +249,8 @@ public sealed class AdminOrdersController : ControllerBase
             return null;
         }
 
-        var phone = NormalizeOptionalText(row.ClienteTelefoneCelular);
-        if (phone is null)
+        var phone = PhoneNumberNormalizer.ToBrazilNationalPhone(row.ClienteTelefoneCelular);
+        if (string.IsNullOrWhiteSpace(phone))
         {
             errors.Add(new OrderHistoryImportErrorResponse(row.RowNumber, "Informe o telefone celular do cliente."));
             return null;
@@ -360,7 +361,7 @@ public sealed class AdminOrdersController : ControllerBase
         var cpfCnpj = FirstNonEmpty(groupRows.Select(row => row.CpfCnpj));
         var email = FirstNonEmpty(groupRows.Select(row => row.ClienteEmail));
 
-        customersByPhone.TryGetValue(phone, out var existingByPhone);
+        TryGetCustomerByPhone(customersByPhone, phone, out var existingByPhone);
         if (cpfCnpj is not null &&
             customersByCpfCnpj.TryGetValue(cpfCnpj, out var existingByCpfCnpj) &&
             (existingByPhone is null || !string.Equals(existingByCpfCnpj.Id, existingByPhone.Id, StringComparison.Ordinal)))
@@ -395,7 +396,7 @@ public sealed class AdminOrdersController : ControllerBase
                     : "Telefone ja esta cadastrado para outro cliente.");
         }
 
-        customersByPhone[saveResult.Customer.ClienteTelefoneCelular.Trim()] = saveResult.Customer;
+        AddCustomerPhoneLookup(customersByPhone, saveResult.Customer.ClienteTelefoneCelular, saveResult.Customer);
         if (!string.IsNullOrWhiteSpace(saveResult.Customer.CpfCnpj))
         {
             customersByCpfCnpj[saveResult.Customer.CpfCnpj!.Trim()] = saveResult.Customer;
@@ -482,6 +483,34 @@ public sealed class AdminOrdersController : ControllerBase
     private static string? NormalizeOptionalText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static bool TryGetCustomerByPhone(
+        Dictionary<string, CustomerResponse> lookup,
+        string phone,
+        out CustomerResponse? customer)
+    {
+        foreach (var key in PhoneNumberNormalizer.GetLookupKeys(phone))
+        {
+            if (lookup.TryGetValue(key, out customer))
+            {
+                return true;
+            }
+        }
+
+        customer = null;
+        return false;
+    }
+
+    private static void AddCustomerPhoneLookup(
+        Dictionary<string, CustomerResponse> lookup,
+        string phone,
+        CustomerResponse customer)
+    {
+        foreach (var key in PhoneNumberNormalizer.GetLookupKeys(phone))
+        {
+            lookup[key] = customer;
+        }
     }
 
     private static void RemoveCustomerLookup(Dictionary<string, CustomerResponse> lookup, string? key, string customerId)

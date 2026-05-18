@@ -72,8 +72,9 @@ public sealed class AgentService
         CancellationToken cancellationToken)
     {
         var customers = await GetCustomerRecurrencesAsync(storeId, cancellationToken);
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(phoneNumber);
         var customer = customers.FirstOrDefault(item =>
-            string.Equals(item.PhoneNumber, phoneNumber, StringComparison.Ordinal));
+            string.Equals(item.PhoneNumber, normalizedPhoneNumber, StringComparison.Ordinal));
 
         if (customer is null)
         {
@@ -146,6 +147,7 @@ public sealed class AgentService
         {
             var recipients = await GetAutomatedCampaignRecipientsAsync(campaign, cancellationToken);
             var distinctRecipients = recipients
+                .Select(PhoneNumberNormalizer.ToBrazilNationalPhone)
                 .Where(phoneNumber => !string.IsNullOrWhiteSpace(phoneNumber))
                 .Distinct(StringComparer.Ordinal)
                 .ToArray();
@@ -260,12 +262,14 @@ public sealed class AgentService
 
         foreach (var phoneNumber in phoneNumbers)
         {
+            var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(phoneNumber);
+            var whatsappAddress = PhoneNumberNormalizer.ToWhatsappAddress(normalizedPhoneNumber);
             TwilioMessageSendResult sendResult;
             try
             {
                 sendResult = await _twilioMessageClient.SendWhatsappMessageAsync(
                     from: storeId,
-                    to: phoneNumber,
+                    to: whatsappAddress,
                     body: message,
                     cancellationToken);
             }
@@ -277,27 +281,27 @@ public sealed class AgentService
             {
                 await TryRecordAgentMessageAsync(
                     storeId,
-                    phoneNumber,
+                    whatsappAddress,
                     message,
                     twilioMessageSid: null,
                     WhatsappConversationMessageStatuses.Failed,
                     ex.Message,
                     cancellationToken);
 
-                results.Add(new AgentSendResultItemResponse(phoneNumber, Sent: false, ex.Message));
+                results.Add(new AgentSendResultItemResponse(normalizedPhoneNumber, Sent: false, ex.Message));
                 continue;
             }
 
             await TryRecordAgentMessageAsync(
                 storeId,
-                phoneNumber,
+                whatsappAddress,
                 message,
                 sendResult.Sid,
                 WhatsappConversationMessageStatuses.Sent,
                 error: null,
                 cancellationToken);
 
-            results.Add(new AgentSendResultItemResponse(phoneNumber, Sent: true, Error: null));
+            results.Add(new AgentSendResultItemResponse(normalizedPhoneNumber, Sent: true, Error: null));
         }
 
         return new AgentSendResultResponse(

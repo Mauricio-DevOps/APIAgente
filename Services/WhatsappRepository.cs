@@ -610,7 +610,7 @@ public sealed class WhatsappRepository
         CancellationToken cancellationToken)
     {
         var storeId = request.StoreId.Trim();
-        var phone = request.ClienteTelefoneCelular.Trim();
+        var phone = PhoneNumberNormalizer.ToBrazilNationalPhone(request.ClienteTelefoneCelular);
         var name = NormalizeOptionalText(request.ClienteNome);
         var cpfCnpj = NormalizeOptionalText(request.CpfCnpj);
         var email = NormalizeOptionalText(request.ClienteEmail);
@@ -662,7 +662,7 @@ public sealed class WhatsappRepository
     {
         var normalizedStoreId = storeId.Trim();
         var normalizedCustomerId = customerId.Trim();
-        var phone = request.ClienteTelefoneCelular.Trim();
+        var phone = PhoneNumberNormalizer.ToBrazilNationalPhone(request.ClienteTelefoneCelular);
         var name = NormalizeOptionalText(request.ClienteNome);
         var cpfCnpj = NormalizeOptionalText(request.CpfCnpj);
         var email = NormalizeOptionalText(request.ClienteEmail);
@@ -778,26 +778,9 @@ public sealed class WhatsappRepository
         CancellationToken cancellationToken)
     {
         var customers = await ListCustomersAsync(storeId, cancellationToken);
-        var exactKey = NormalizePhoneDigits(phoneNumber);
-        var exactMatch = customers.FirstOrDefault(customer =>
-            !string.IsNullOrWhiteSpace(exactKey) &&
-            string.Equals(
-                NormalizePhoneDigits(customer.ClienteTelefoneCelular),
-                exactKey,
-                StringComparison.Ordinal));
-
-        if (exactMatch is not null)
-        {
-            return exactMatch;
-        }
-
-        var canonicalKey = NormalizeBrazilPhoneForLookup(phoneNumber);
+        var lookupKeys = PhoneNumberNormalizer.GetLookupKeys(phoneNumber);
         return customers.FirstOrDefault(customer =>
-            !string.IsNullOrWhiteSpace(canonicalKey) &&
-            string.Equals(
-                NormalizeBrazilPhoneForLookup(customer.ClienteTelefoneCelular),
-                canonicalKey,
-                StringComparison.Ordinal));
+            PhoneNumberNormalizer.GetLookupKeys(customer.ClienteTelefoneCelular).Any(lookupKeys.Contains));
     }
 
     public async Task<DashboardResponse> GetDashboardAsync(
@@ -1630,7 +1613,11 @@ public sealed class WhatsappRepository
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            recipients.Add(reader.GetString(0));
+            var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(reader.GetString(0));
+            if (!string.IsNullOrWhiteSpace(phoneNumber))
+            {
+                recipients.Add(phoneNumber);
+            }
         }
 
         return recipients;
@@ -1953,10 +1940,13 @@ public sealed class WhatsappRepository
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            candidates.Add(reader.GetString(0));
+            candidates.Add(PhoneNumberNormalizer.ToBrazilNationalPhone(reader.GetString(0)));
         }
 
-        return candidates;
+        return candidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<AgentFeedbackSolicitationResponse>> CreatePeriodicFeedbackSolicitationsAsync(
@@ -1976,7 +1966,10 @@ public sealed class WhatsappRepository
 
         var createdIds = new List<string>();
         var timestamp = nowUtc.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
-        foreach (var phoneNumber in phoneNumbers.Where(item => !string.IsNullOrWhiteSpace(item)).Distinct(StringComparer.Ordinal))
+        foreach (var phoneNumber in phoneNumbers
+                     .Select(PhoneNumberNormalizer.ToBrazilNationalPhone)
+                     .Where(item => !string.IsNullOrWhiteSpace(item))
+                     .Distinct(StringComparer.Ordinal))
         {
             var id = Guid.NewGuid().ToString("N");
             var command = connection.CreateCommand();
@@ -1990,7 +1983,7 @@ public sealed class WhatsappRepository
                 """;
             command.Parameters.AddWithValue("@id", id);
             command.Parameters.AddWithValue("@storeId", settings.StoreId);
-            command.Parameters.AddWithValue("@phoneNumber", phoneNumber.Trim());
+            command.Parameters.AddWithValue("@phoneNumber", phoneNumber);
             command.Parameters.AddWithValue("@kind", AgentFeedbackSolicitationKinds.Periodic);
             command.Parameters.AddWithValue("@status", AgentFeedbackSolicitationStatuses.Pending);
             command.Parameters.AddWithValue("@message", settings.RequestMessage);
@@ -2060,25 +2053,24 @@ public sealed class WhatsappRepository
         CancellationToken cancellationToken)
     {
         var normalizedStoreId = storeId.Trim();
-        var normalizedPhoneNumber = phoneNumber.Trim();
 
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
 
         var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "s.PhoneNumber", "phone", phoneNumber);
         command.CommandText =
-            """
+            $"""
             SELECT s.Id, COALESCE(settings.AcceptedFormat, @defaultFormat)
             FROM AgentFeedbackSolicitations s
             LEFT JOIN AgentFeedbackSettings settings ON settings.StoreId = s.StoreId
             WHERE s.StoreId = @storeId
-              AND s.PhoneNumber = @phoneNumber
+              AND {phoneFilter}
               AND s.Status = @status
             ORDER BY s.SentAtUtc DESC, s.CreatedAtUtc DESC
             LIMIT 1;
             """;
         command.Parameters.AddWithValue("@storeId", normalizedStoreId);
-        command.Parameters.AddWithValue("@phoneNumber", normalizedPhoneNumber);
         command.Parameters.AddWithValue("@status", AgentFeedbackSolicitationStatuses.Sent);
         command.Parameters.AddWithValue("@defaultFormat", AgentFeedbackFormats.Both);
 
@@ -2093,7 +2085,7 @@ public sealed class WhatsappRepository
         CancellationToken cancellationToken)
     {
         var normalizedStoreId = command.StoreId.Trim();
-        var normalizedPhoneNumber = command.PhoneNumber.Trim();
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(command.PhoneNumber);
         var customerMessage = command.CustomerMessage.Trim();
         var solicitationId = Guid.NewGuid().ToString("N");
         var responseId = Guid.NewGuid().ToString("N");
@@ -2157,7 +2149,7 @@ public sealed class WhatsappRepository
     {
         var normalizedSolicitationId = solicitationId.Trim();
         var normalizedStoreId = command.StoreId.Trim();
-        var normalizedPhoneNumber = command.PhoneNumber.Trim();
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(command.PhoneNumber);
         var customerMessage = command.CustomerMessage.Trim();
         var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
 
@@ -2207,14 +2199,12 @@ public sealed class WhatsappRepository
                 LastError = NULL,
                 UpdatedAtUtc = @respondedAtUtc
             WHERE Id = @solicitationId
-              AND StoreId = @storeId
-              AND PhoneNumber = @phoneNumber;
+              AND StoreId = @storeId;
             """;
         solicitationCommand.Parameters.AddWithValue("@status", AgentFeedbackSolicitationStatuses.Responded);
         solicitationCommand.Parameters.AddWithValue("@respondedAtUtc", now);
         solicitationCommand.Parameters.AddWithValue("@solicitationId", normalizedSolicitationId);
         solicitationCommand.Parameters.AddWithValue("@storeId", normalizedStoreId);
-        solicitationCommand.Parameters.AddWithValue("@phoneNumber", normalizedPhoneNumber);
         var updated = await solicitationCommand.ExecuteNonQueryAsync(cancellationToken) > 0;
 
         await transaction.CommitAsync(cancellationToken);
@@ -2230,7 +2220,7 @@ public sealed class WhatsappRepository
         CancellationToken cancellationToken)
     {
         var normalizedStoreId = storeId.Trim();
-        var normalizedPhoneNumber = phoneNumber.Trim();
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(phoneNumber);
         var normalizedText = NormalizeOptionalText(text);
         var normalizedMediaUrl = NormalizeOptionalText(mediaUrl);
         var normalizedMediaContentType = NormalizeOptionalText(mediaContentType);
@@ -2243,25 +2233,26 @@ public sealed class WhatsappRepository
 
         var selectCommand = connection.CreateCommand();
         selectCommand.Transaction = transaction;
+        var phoneFilter = AddPhoneStorageCandidateParameters(selectCommand, "s.PhoneNumber", "phone", phoneNumber);
         selectCommand.CommandText =
-            """
-            SELECT s.Id, COALESCE(settings.AcceptedFormat, @defaultFormat)
+            $"""
+            SELECT s.Id, COALESCE(settings.AcceptedFormat, @defaultFormat), s.PhoneNumber
             FROM AgentFeedbackSolicitations s
             LEFT JOIN AgentFeedbackSettings settings ON settings.StoreId = s.StoreId
             WHERE s.StoreId = @storeId
-              AND s.PhoneNumber = @phoneNumber
+              AND {phoneFilter}
               AND s.Status = @status
             ORDER BY s.SentAtUtc DESC, s.CreatedAtUtc DESC
             LIMIT 1;
             """;
         selectCommand.Parameters.AddWithValue("@storeId", normalizedStoreId);
-        selectCommand.Parameters.AddWithValue("@phoneNumber", normalizedPhoneNumber);
         selectCommand.Parameters.AddWithValue("@status", AgentFeedbackSolicitationStatuses.Sent);
         selectCommand.Parameters.AddWithValue("@defaultFormat", AgentFeedbackFormats.Both);
 
         var foundSolicitation = false;
         var solicitationId = string.Empty;
         var acceptedFormat = AgentFeedbackFormats.Both;
+        var storedPhoneNumber = normalizedPhoneNumber;
         await using (var reader = await selectCommand.ExecuteReaderAsync(cancellationToken))
         {
             if (await reader.ReadAsync(cancellationToken))
@@ -2269,6 +2260,11 @@ public sealed class WhatsappRepository
                 foundSolicitation = true;
                 solicitationId = reader.GetString(0);
                 acceptedFormat = AgentFeedbackFormats.Normalize(reader.GetString(1));
+                var storedNormalizedPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(reader.GetString(2));
+                if (!string.IsNullOrWhiteSpace(storedNormalizedPhoneNumber))
+                {
+                    storedPhoneNumber = storedNormalizedPhoneNumber;
+                }
             }
         }
 
@@ -2307,7 +2303,7 @@ public sealed class WhatsappRepository
         responseCommand.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
         responseCommand.Parameters.AddWithValue("@solicitationId", solicitationId);
         responseCommand.Parameters.AddWithValue("@storeId", normalizedStoreId);
-        responseCommand.Parameters.AddWithValue("@phoneNumber", normalizedPhoneNumber);
+        responseCommand.Parameters.AddWithValue("@phoneNumber", storedPhoneNumber);
         responseCommand.Parameters.AddWithValue("@responseType", responseType);
         responseCommand.Parameters.AddWithValue("@text", responseType == AgentFeedbackResponseTypes.Text ? (object?)normalizedText ?? DBNull.Value : DBNull.Value);
         responseCommand.Parameters.AddWithValue("@mediaUrl", responseType == AgentFeedbackResponseTypes.Audio ? (object?)normalizedMediaUrl ?? DBNull.Value : DBNull.Value);
@@ -2610,12 +2606,21 @@ public sealed class WhatsappRepository
         while (await reader.ReadAsync(cancellationToken))
         {
             customers.Add(new AgentCampaignCustomerResponse(
-                reader.GetString(0),
+                PhoneNumberNormalizer.ToBrazilNationalPhone(reader.GetString(0)),
                 reader.GetString(1),
                 Convert.ToInt32(reader.GetInt64(2))));
         }
 
-        return customers;
+        return customers
+            .Where(customer => !string.IsNullOrWhiteSpace(customer.PhoneNumber))
+            .GroupBy(customer => customer.PhoneNumber, StringComparer.Ordinal)
+            .Select(group => new AgentCampaignCustomerResponse(
+                group.Key,
+                group.Max(customer => customer.LastOrderAtUtc),
+                group.Sum(customer => customer.TotalOrders)))
+            .OrderByDescending(customer => customer.LastOrderAtUtc, StringComparer.Ordinal)
+            .ThenBy(customer => customer.PhoneNumber, StringComparer.Ordinal)
+            .ToArray();
     }
 
     public async Task<IReadOnlyList<AgentCustomerRecurrenceResponse>> GetAgentCustomerRecurrencesAsync(
@@ -2641,7 +2646,12 @@ public sealed class WhatsappRepository
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            var phoneNumber = reader.GetString(0);
+            var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(reader.GetString(0));
+            if (string.IsNullOrWhiteSpace(phoneNumber))
+            {
+                continue;
+            }
+
             var createdAtUtc = reader.GetString(1);
             if (!DateTimeOffset.TryParse(
                     createdAtUtc,
@@ -2789,6 +2799,8 @@ public sealed class WhatsappRepository
         HistoricalOrderRegistrationData order,
         CancellationToken cancellationToken)
     {
+        var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(order.PhoneNumber);
+
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = connection.BeginTransaction();
@@ -2838,7 +2850,7 @@ public sealed class WhatsappRepository
             """;
         insertOrderCommand.Parameters.AddWithValue("@id", order.Id);
         insertOrderCommand.Parameters.AddWithValue("@storeId", order.StoreId);
-        insertOrderCommand.Parameters.AddWithValue("@phoneNumber", order.PhoneNumber);
+        insertOrderCommand.Parameters.AddWithValue("@phoneNumber", phoneNumber);
         insertOrderCommand.Parameters.AddWithValue("@sourceMessageId", order.SourceMessageId);
         insertOrderCommand.Parameters.AddWithValue("@saleType", (object?)order.SaleType ?? DBNull.Value);
         insertOrderCommand.Parameters.AddWithValue("@status", OrderStatuses.Concluido);
@@ -2886,6 +2898,8 @@ public sealed class WhatsappRepository
         OrderRegistrationData order,
         CancellationToken cancellationToken)
     {
+        var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(order.PhoneNumber);
+
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(cancellationToken);
         await using var transaction = connection.BeginTransaction();
@@ -2936,7 +2950,7 @@ public sealed class WhatsappRepository
             """;
         insertOrderCommand.Parameters.AddWithValue("@id", order.Id);
         insertOrderCommand.Parameters.AddWithValue("@storeId", order.StoreId);
-        insertOrderCommand.Parameters.AddWithValue("@phoneNumber", order.PhoneNumber);
+        insertOrderCommand.Parameters.AddWithValue("@phoneNumber", phoneNumber);
         insertOrderCommand.Parameters.AddWithValue("@sourceMessageId", order.SourceMessageId);
         insertOrderCommand.Parameters.AddWithValue("@promptResponseId", (object?)order.PromptResponseId ?? DBNull.Value);
         insertOrderCommand.Parameters.AddWithValue("@conversationId", (object?)order.ConversationId ?? DBNull.Value);
@@ -3015,8 +3029,9 @@ public sealed class WhatsappRepository
         await connection.OpenAsync(cancellationToken);
 
         var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "o.PhoneNumber", "phone", phoneNumber);
         command.CommandText =
-            """
+            $"""
             SELECT o.Id,
                    o.Status,
                    o.SaleType,
@@ -3033,15 +3048,66 @@ public sealed class WhatsappRepository
             FROM Orders o
             LEFT JOIN OrderItems oi ON oi.OrderId = o.Id
             WHERE o.StoreId = @storeId
-              AND o.PhoneNumber = @phoneNumber
+              AND {phoneFilter}
               AND o.Status IN (@emProducao, @emRotaEntrega)
             ORDER BY o.CreatedAtUtc DESC, oi.CreatedAtUtc, oi.Id;
             """;
         command.Parameters.AddWithValue("@storeId", storeId);
-        command.Parameters.AddWithValue("@phoneNumber", phoneNumber);
         command.Parameters.AddWithValue("@emProducao", OrderStatuses.EmProducao);
         command.Parameters.AddWithValue("@emRotaEntrega", OrderStatuses.EmRotaEntrega);
 
+        return await ReadOrderDataAsync(command, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<ActiveOrderData>> GetRecentOrdersAsync(
+        string storeId,
+        string phoneNumber,
+        int limit,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        var phoneFilter = AddPhoneStorageCandidateParameters(command, "o.PhoneNumber", "phone", phoneNumber);
+        command.CommandText =
+            $"""
+            WITH RecentOrders AS (
+                SELECT o.Id
+                FROM Orders o
+                WHERE o.StoreId = @storeId
+                  AND {phoneFilter}
+                ORDER BY o.CreatedAtUtc DESC, o.Id DESC
+                LIMIT @limit
+            )
+            SELECT o.Id,
+                   o.Status,
+                   o.SaleType,
+                   o.TotalCents,
+                   o.CreatedAtUtc,
+                   o.UpdatedAtUtc,
+                   oi.RequestedProductName,
+                   oi.ProductNameSnapshot,
+                   oi.Quantity,
+                   oi.UnitPriceCents,
+                   oi.TotalPriceCents,
+                   oi.Observation,
+                   oi.MatchStatus
+            FROM Orders o
+            INNER JOIN RecentOrders ro ON ro.Id = o.Id
+            LEFT JOIN OrderItems oi ON oi.OrderId = o.Id
+            ORDER BY o.CreatedAtUtc DESC, o.Id DESC, oi.CreatedAtUtc, oi.Id;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@limit", Math.Max(1, limit));
+
+        return await ReadOrderDataAsync(command, cancellationToken);
+    }
+
+    private static async Task<IReadOnlyList<ActiveOrderData>> ReadOrderDataAsync(
+        NpgsqlCommand command,
+        CancellationToken cancellationToken)
+    {
         var orders = new Dictionary<string, ActiveOrderBuilder>(StringComparer.Ordinal);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -3125,7 +3191,12 @@ public sealed class WhatsappRepository
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
-            var phoneNumber = reader.GetString(1);
+            var rawPhoneNumber = reader.GetString(1);
+            var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(rawPhoneNumber);
+            if (string.IsNullOrWhiteSpace(phoneNumber))
+            {
+                phoneNumber = rawPhoneNumber.Trim();
+            }
             if (!customers.TryGetValue(phoneNumber, out var customer))
             {
                 customer = new OrderManagementCustomerBuilder(phoneNumber);
@@ -4469,6 +4540,29 @@ public sealed class WhatsappRepository
             reader.GetString(7));
     }
 
+    private static string AddPhoneStorageCandidateParameters(
+        NpgsqlCommand command,
+        string columnName,
+        string parameterPrefix,
+        string phoneNumber)
+    {
+        var candidates = PhoneNumberNormalizer.GetStorageCandidates(phoneNumber);
+        if (candidates.Count == 0)
+        {
+            candidates = new[] { string.Empty };
+        }
+
+        var parameterNames = new List<string>(candidates.Count);
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            var parameterName = $"@{parameterPrefix}{index}";
+            parameterNames.Add(parameterName);
+            command.Parameters.AddWithValue(parameterName, candidates[index]);
+        }
+
+        return $"{columnName} IN ({string.Join(", ", parameterNames)})";
+    }
+
     private static async Task<IReadOnlyList<WhatsappConversationCustomerLookup>> ReadWhatsappConversationCustomerLookupsAsync(
         NpgsqlConnection connection,
         string storeId,
@@ -4495,8 +4589,7 @@ public sealed class WhatsappRepository
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetString(1),
                 phoneNumber,
-                NormalizePhoneDigits(phoneNumber),
-                NormalizeBrazilPhoneForLookup(phoneNumber)));
+                PhoneNumberNormalizer.GetLookupKeys(phoneNumber)));
         }
 
         return customers;
@@ -4506,36 +4599,9 @@ public sealed class WhatsappRepository
         IReadOnlyList<WhatsappConversationCustomerLookup> customers,
         string phoneNumber)
     {
-        var exactKey = NormalizePhoneDigits(phoneNumber);
-        var exactMatch = customers.FirstOrDefault(customer =>
-            !string.IsNullOrWhiteSpace(exactKey) &&
-            string.Equals(customer.ExactKey, exactKey, StringComparison.Ordinal));
-        if (exactMatch is not null)
-        {
-            return exactMatch;
-        }
-
-        var canonicalKey = NormalizeBrazilPhoneForLookup(phoneNumber);
+        var lookupKeys = PhoneNumberNormalizer.GetLookupKeys(phoneNumber);
         return customers.FirstOrDefault(customer =>
-            !string.IsNullOrWhiteSpace(canonicalKey) &&
-            string.Equals(customer.CanonicalKey, canonicalKey, StringComparison.Ordinal));
-    }
-
-    private static string NormalizeBrazilPhoneForLookup(string value)
-    {
-        var digits = NormalizePhoneDigits(value);
-        return digits.Length == 13 &&
-            digits.StartsWith("55", StringComparison.Ordinal) &&
-            digits[4] == '9'
-                ? string.Concat(digits.AsSpan(0, 4), digits.AsSpan(5))
-                : digits;
-    }
-
-    private static string NormalizePhoneDigits(string value)
-    {
-        return string.IsNullOrWhiteSpace(value)
-            ? string.Empty
-            : new string(value.Where(char.IsDigit).ToArray());
+            customer.LookupKeys.Any(lookupKeys.Contains));
     }
 
     private static WhatsappConversationMessageResponse ReadWhatsappConversationMessage(NpgsqlDataReader reader)
@@ -4583,23 +4649,28 @@ public sealed class WhatsappRepository
         string? excludeCustomerId,
         CancellationToken cancellationToken)
     {
+        var phoneLookupKeys = PhoneNumberNormalizer.GetLookupKeys(phone);
         var phoneCommand = connection.CreateCommand();
         phoneCommand.Transaction = transaction;
         phoneCommand.CommandText =
             """
-            SELECT ID_Cliente
+            SELECT CLIENTE_TELEFONE_CELULAR
             FROM Clientes
             WHERE StoreId = @storeId
-              AND CLIENTE_TELEFONE_CELULAR = @phone
               AND (@excludeCustomerId IS NULL OR ID_Cliente <> @excludeCustomerId)
-            LIMIT 1;
             """;
         phoneCommand.Parameters.AddWithValue("@storeId", storeId);
-        phoneCommand.Parameters.AddWithValue("@phone", phone);
         AddNullableTextParameter(phoneCommand, "@excludeCustomerId", excludeCustomerId);
-        if (await phoneCommand.ExecuteScalarAsync(cancellationToken) is not null)
+
+        await using (var reader = await phoneCommand.ExecuteReaderAsync(cancellationToken))
         {
-            return "telefone";
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                if (PhoneNumberNormalizer.GetLookupKeys(reader.GetString(0)).Any(phoneLookupKeys.Contains))
+                {
+                    return "telefone";
+                }
+            }
         }
 
         if (string.IsNullOrWhiteSpace(cpfCnpj))
@@ -4873,7 +4944,8 @@ public sealed class WhatsappRepository
         orderCommand.Parameters.AddWithValue("@storeId", storeId);
         orderCommand.Parameters.AddWithValue("@orderId", orderId);
 
-        var phoneNumber = await orderCommand.ExecuteScalarAsync(cancellationToken) as string;
+        var phoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(
+            await orderCommand.ExecuteScalarAsync(cancellationToken) as string);
         if (string.IsNullOrWhiteSpace(phoneNumber))
         {
             return;
@@ -4898,7 +4970,7 @@ public sealed class WhatsappRepository
         insertCommand.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
         insertCommand.Parameters.AddWithValue("@storeId", storeId);
         insertCommand.Parameters.AddWithValue("@orderId", orderId);
-        insertCommand.Parameters.AddWithValue("@phoneNumber", phoneNumber.Trim());
+        insertCommand.Parameters.AddWithValue("@phoneNumber", phoneNumber);
         insertCommand.Parameters.AddWithValue("@kind", AgentFeedbackSolicitationKinds.Order);
         insertCommand.Parameters.AddWithValue("@status", AgentFeedbackSolicitationStatuses.Pending);
         insertCommand.Parameters.AddWithValue("@message", settings.RequestMessage);
@@ -5326,8 +5398,7 @@ public sealed class WhatsappRepository
         string Id,
         string? Name,
         string PhoneNumber,
-        string ExactKey,
-        string CanonicalKey);
+        IReadOnlySet<string> LookupKeys);
 
     private sealed record ProductSearchCandidate(
         string Id,

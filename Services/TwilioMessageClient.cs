@@ -29,12 +29,13 @@ public sealed class TwilioMessageClient
         }
 
         var endpoint = $"2010-04-01/Accounts/{Uri.EscapeDataString(_options.AccountSid)}/Messages.json";
+        var normalizedTo = PhoneNumberNormalizer.ToWhatsappAddress(to);
         using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["From"] = from,
-                ["To"] = to,
+                ["To"] = normalizedTo,
                 ["Body"] = body
             })
         };

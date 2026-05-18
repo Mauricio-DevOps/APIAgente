@@ -226,12 +226,13 @@ public sealed class AgentFeedbackService
         AgentFeedbackSolicitationResponse solicitation,
         CancellationToken cancellationToken)
     {
+        var whatsappAddress = PhoneNumberNormalizer.ToWhatsappAddress(solicitation.PhoneNumber);
         TwilioMessageSendResult sendResult;
         try
         {
             sendResult = await _twilioMessageClient.SendWhatsappMessageAsync(
                 from: solicitation.StoreId,
-                to: solicitation.PhoneNumber,
+                to: whatsappAddress,
                 body: solicitation.Message,
                 cancellationToken);
         }
@@ -243,6 +244,7 @@ public sealed class AgentFeedbackService
         {
             await TryRecordSolicitationMessageAsync(
                 solicitation,
+                whatsappAddress,
                 twilioMessageSid: null,
                 WhatsappConversationMessageStatuses.Failed,
                 ex.Message,
@@ -257,6 +259,7 @@ public sealed class AgentFeedbackService
 
         await TryRecordSolicitationMessageAsync(
             solicitation,
+            whatsappAddress,
             sendResult.Sid,
             WhatsappConversationMessageStatuses.Sent,
             error: null,
@@ -267,6 +270,7 @@ public sealed class AgentFeedbackService
 
     private async Task TryRecordSolicitationMessageAsync(
         AgentFeedbackSolicitationResponse solicitation,
+        string whatsappAddress,
         string? twilioMessageSid,
         string status,
         string? error,
@@ -276,7 +280,7 @@ public sealed class AgentFeedbackService
         {
             await _repository.RecordWhatsappConversationMessageAsync(
                 solicitation.StoreId,
-                solicitation.PhoneNumber,
+                whatsappAddress,
                 WhatsappConversationMessageDirections.Outbound,
                 WhatsappConversationMessageTypes.System,
                 solicitation.Message,

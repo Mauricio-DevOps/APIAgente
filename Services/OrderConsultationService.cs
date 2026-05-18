@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using AtendenteWhatssApp.Models;
 
 namespace AtendenteWhatssApp.Services;
 
@@ -18,25 +19,56 @@ public sealed class OrderConsultationService
         string aiResponseText,
         CancellationToken cancellationToken)
     {
-        var orders = await _repository.GetActiveOrdersAsync(
+        var activeOrders = await _repository.GetActiveOrdersAsync(
             storeId.Trim(),
             phoneNumber.Trim(),
             cancellationToken);
+        var recentOrders = await _repository.GetRecentOrdersAsync(
+            storeId.Trim(),
+            phoneNumber.Trim(),
+            limit: 3,
+            cancellationToken);
+        var activeOrderIds = activeOrders
+            .Select(order => order.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var recentHistory = recentOrders
+            .Where(order => !activeOrderIds.Contains(order.Id))
+            .ToArray();
 
         var message = new StringBuilder(aiResponseText.Trim());
         message.AppendLine();
         message.AppendLine();
 
-        if (orders.Count == 0)
+        if (activeOrders.Count == 0 && recentHistory.Length == 0)
         {
-            message.Append("Não encontrei nenhum pedido ativo para este número.");
+            message.Append("Nao encontrei pedidos ativos ou recentes para este numero.");
             return message.ToString();
         }
 
-        message.AppendLine(orders.Count == 1
+        if (activeOrders.Count == 0)
+        {
+            message.AppendLine("Nao encontrei pedidos ativos para este numero, mas encontrei estes pedidos recentes:");
+            AppendOrders(message, recentHistory);
+            return message.ToString().TrimEnd();
+        }
+
+        message.AppendLine(activeOrders.Count == 1
             ? "Encontrei este pedido ativo:"
             : "Encontrei estes pedidos ativos:");
+        AppendOrders(message, activeOrders);
 
+        if (recentHistory.Length > 0)
+        {
+            message.AppendLine();
+            message.AppendLine("Tambem encontrei estes pedidos recentes:");
+            AppendOrders(message, recentHistory);
+        }
+
+        return message.ToString().TrimEnd();
+    }
+
+    private static void AppendOrders(StringBuilder message, IReadOnlyList<ActiveOrderData> orders)
+    {
         for (var index = 0; index < orders.Count; index++)
         {
             var order = orders[index];
@@ -79,18 +111,16 @@ public sealed class OrderConsultationService
                 message.AppendLine();
             }
         }
-
-        return message.ToString().TrimEnd();
     }
 
     private static string FormatStatus(string status)
     {
         return status switch
         {
-            OrderStatuses.EmProducao => "em produção",
+            OrderStatuses.EmProducao => "em producao",
             OrderStatuses.EmRotaEntrega => "em rota de entrega",
-            OrderStatuses.Concluido => "concluído",
-            OrderStatuses.PendingReview => "pendente de revisão",
+            OrderStatuses.Concluido => "concluido",
+            OrderStatuses.PendingReview => "pendente de revisao",
             _ => status
         };
     }

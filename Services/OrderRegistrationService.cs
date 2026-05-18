@@ -16,7 +16,8 @@ public sealed class OrderRegistrationService
         CancellationToken cancellationToken)
     {
         var storeId = command.StoreId.Trim();
-        var phoneNumber = command.PhoneNumber.Trim();
+        var conversationPhoneNumber = command.PhoneNumber.Trim();
+        var orderPhoneNumber = PhoneNumberNormalizer.ToBrazilNationalPhone(conversationPhoneNumber);
         var sourceMessageId = ResolveSourceMessageId(command);
         var orderId = Guid.NewGuid().ToString("N");
         var saleType = NormalizeSaleType(command.Pedido?.TipoVenda);
@@ -54,7 +55,7 @@ public sealed class OrderRegistrationService
         var order = new OrderRegistrationData(
             orderId,
             storeId,
-            phoneNumber,
+            orderPhoneNumber,
             sourceMessageId,
             string.IsNullOrWhiteSpace(command.PromptResponseId) ? null : command.PromptResponseId.Trim(),
             string.IsNullOrWhiteSpace(command.ConversationId) ? null : command.ConversationId.Trim(),
@@ -69,7 +70,7 @@ public sealed class OrderRegistrationService
 
         var result = await _repository.SaveOrderAsync(order, cancellationToken);
 
-        await _repository.ClearConversationAsync(storeId, phoneNumber, cancellationToken);
+        await _repository.ClearConversationAsync(storeId, conversationPhoneNumber, cancellationToken);
 
         return result;
     }

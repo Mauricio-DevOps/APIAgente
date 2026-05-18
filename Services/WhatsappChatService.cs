@@ -417,7 +417,7 @@ public sealed class WhatsappChatService
             draft.CpfCnpj,
             draft.Email,
             draft.Endereco,
-            existingCustomer?.ClienteTelefoneCelular ?? NormalizeWhatsappPhoneForCustomer(phoneNumber));
+            existingCustomer?.ClienteTelefoneCelular ?? PhoneNumberNormalizer.ToBrazilNationalPhone(phoneNumber));
 
         var result = existingCustomer is null
             ? await _repository.CreateCustomerAsync(request, cancellationToken)
@@ -580,15 +580,6 @@ public sealed class WhatsappChatService
     private static string? FirstNonEmpty(string? first, string? second)
     {
         return NormalizeOptionalText(first) ?? NormalizeOptionalText(second);
-    }
-
-    private static string NormalizeWhatsappPhoneForCustomer(string phoneNumber)
-    {
-        var normalized = phoneNumber.Trim();
-        const string whatsappPrefix = "whatsapp:";
-        return normalized.StartsWith(whatsappPrefix, StringComparison.OrdinalIgnoreCase)
-            ? normalized[whatsappPrefix.Length..].Trim()
-            : normalized;
     }
 
     private static PromptOutputTextResponse DeserializeOutputText(string outputText)

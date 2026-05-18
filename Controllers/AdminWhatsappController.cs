@@ -195,7 +195,7 @@ public sealed class AdminWhatsappController : ControllerBase
         }
 
         var storeId = request.StoreId.Trim();
-        var normalizedPhoneNumber = phoneNumber.Trim();
+        var normalizedPhoneNumber = PhoneNumberNormalizer.ToWhatsappAddress(phoneNumber);
         var message = request.Message.Trim();
 
         TwilioMessageSendResult sendResult;
