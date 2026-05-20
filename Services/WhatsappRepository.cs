@@ -437,7 +437,14 @@ public sealed class WhatsappRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
         await SeedCompanyIfNeededAsync(connection, cancellationToken);
         await EnsureClientesSchemaAsync(connection, cancellationToken);
-        await EnsureCompanyBrandingSchemaAsync(connection, cancellationToken);
+        try
+        {
+            await EnsureCompanyBrandingSchemaAsync(connection, cancellationToken);
+        }
+        catch (Exception error) when (error is NpgsqlException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"Company branding schema update failed: {error.Message}");
+        }
 
         if (!await TableHasColumnAsync(connection, "WhatsappConversations", "ConversationId", cancellationToken))
         {
