@@ -10,11 +10,21 @@ namespace AtendenteWhatssApp.Services;
 
 public sealed class WhatsappRepository
 {
+    private const string DefaultBrandPaletteKey = "TERRACOTA";
     private const string DefaultFeedbackRequestMessage =
         "Ola! Seu pedido foi concluido. Pode nos contar como foi sua experiencia? Voce pode responder por texto ou audio.";
     private const int DefaultFeedbackDelayMinutes = 60;
     private const int DefaultFeedbackPeriodicSurveyDays = 10;
     private const int DefaultFeedbackPeriodicSurveySampleSize = 10;
+    private static readonly IReadOnlyDictionary<string, CompanyBrandPalette> BrandPalettes =
+        new Dictionary<string, CompanyBrandPalette>(StringComparer.Ordinal)
+        {
+            ["TERRACOTA"] = new("#9F3D1E", "#241914", "#F6F3EF", "ELEGANTE", "CLARO"),
+            ["VERDE"] = new("#1F6F43", "#17231B", "#F3F7F2", "ELEGANTE", "CLARO"),
+            ["AZUL"] = new("#245B8F", "#172331", "#F2F6FA", "ELEGANTE", "CLARO"),
+            ["VINHO"] = new("#7A1E34", "#26151B", "#FBF3F5", "ELEGANTE", "CLARO"),
+            ["GRAFITE"] = new("#252A31", "#1F2328", "#F4F4F2", "ELEGANTE", "CLARO")
+        };
     private static readonly HashSet<string> ProductSearchStopWords = new(StringComparer.Ordinal)
     {
         "sobre",
@@ -146,6 +156,13 @@ public sealed class WhatsappRepository
                 PasswordHash TEXT NOT NULL,
                 CompanyName TEXT NOT NULL,
                 CompanyPhone TEXT NOT NULL UNIQUE,
+                PaletteKey TEXT NOT NULL DEFAULT 'TERRACOTA',
+                PrimaryColor TEXT NOT NULL DEFAULT '#9F3D1E',
+                SecondaryColor TEXT NOT NULL DEFAULT '#241914',
+                BackgroundColor TEXT NOT NULL DEFAULT '#F6F3EF',
+                MenuTheme TEXT NOT NULL DEFAULT 'ELEGANTE',
+                MenuMode TEXT NOT NULL DEFAULT 'CLARO',
+                LogoDataUrl TEXT NULL,
                 CreatedAtUtc TEXT NOT NULL,
                 UpdatedAtUtc TEXT NOT NULL
             );
@@ -420,6 +437,7 @@ public sealed class WhatsappRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
         await SeedCompanyIfNeededAsync(connection, cancellationToken);
         await EnsureClientesSchemaAsync(connection, cancellationToken);
+        await EnsureCompanyBrandingSchemaAsync(connection, cancellationToken);
 
         if (!await TableHasColumnAsync(connection, "WhatsappConversations", "ConversationId", cancellationToken))
         {
@@ -545,6 +563,32 @@ public sealed class WhatsappRepository
         }
     }
 
+    private static async Task EnsureCompanyBrandingSchemaAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        foreach (var column in new[]
+        {
+            ("PaletteKey", "TEXT NOT NULL DEFAULT 'TERRACOTA'"),
+            ("PrimaryColor", "TEXT NOT NULL DEFAULT '#9F3D1E'"),
+            ("SecondaryColor", "TEXT NOT NULL DEFAULT '#241914'"),
+            ("BackgroundColor", "TEXT NOT NULL DEFAULT '#F6F3EF'"),
+            ("MenuTheme", "TEXT NOT NULL DEFAULT 'ELEGANTE'"),
+            ("MenuMode", "TEXT NOT NULL DEFAULT 'CLARO'"),
+            ("LogoDataUrl", "TEXT NULL")
+        })
+        {
+            if (await TableHasColumnAsync(connection, "Companies", column.Item1, cancellationToken))
+            {
+                continue;
+            }
+
+            var alterCommand = connection.CreateCommand();
+            alterCommand.CommandText = $"ALTER TABLE Companies ADD COLUMN {column.Item1} {column.Item2};";
+            await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+    }
+
     public async Task<CompanyLoginResponse?> AuthenticateCompanyAsync(
         string username,
         string password,
@@ -580,6 +624,154 @@ public sealed class WhatsappRepository
             reader.GetString(3),
             reader.GetString(4),
             reader.GetString(1));
+    }
+
+    public async Task<BrandingSettingsResponse?> GetBrandingSettingsAsync(
+        string storeId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStoreId = NormalizeOptionalText(storeId);
+        if (normalizedStoreId is null)
+        {
+            return null;
+        }
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT CompanyName,
+                   CompanyPhone,
+                   PaletteKey,
+                   PrimaryColor,
+                   SecondaryColor,
+                   BackgroundColor,
+                   MenuTheme,
+                   MenuMode,
+                   LogoDataUrl,
+                   UpdatedAtUtc
+            FROM Companies
+            WHERE CompanyPhone = @storeId
+               OR Username = @storeId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@storeId", normalizedStoreId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return CreateBrandingSettingsResponse(
+            reader.GetString(1),
+            reader.GetString(0),
+            reader.IsDBNull(2) ? null : reader.GetString(2),
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4),
+            reader.IsDBNull(5) ? null : reader.GetString(5),
+            reader.IsDBNull(6) ? null : reader.GetString(6),
+            reader.IsDBNull(7) ? null : reader.GetString(7),
+            reader.IsDBNull(8) ? null : reader.GetString(8),
+            reader.GetString(9));
+    }
+
+    public async Task<BrandingSettingsResponse> SaveBrandingSettingsAsync(
+        BrandingSettingsUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStoreId = NormalizeOptionalText(request.StoreId);
+        var normalizedSiteName = NormalizeOptionalText(request.SiteName);
+        if (normalizedStoreId is null || normalizedSiteName is null)
+        {
+            throw new InvalidOperationException("StoreId and site name are required.");
+        }
+
+        if (normalizedSiteName.Length > 120)
+        {
+            throw new InvalidOperationException("Site name must have at most 120 characters.");
+        }
+
+        var paletteKey = NormalizeBrandPaletteKey(request.PaletteKey);
+        var palette = BrandPalettes[paletteKey];
+        var providedLogoDataUrl = NormalizeLogoDataUrl(request.LogoDataUrl);
+        var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = connection.BeginTransaction();
+
+        var companyId = await FindCompanyIdByPhoneAsync(
+            connection,
+            transaction,
+            normalizedStoreId,
+            cancellationToken);
+        if (companyId is null)
+        {
+            companyId = Guid.NewGuid().ToString("N");
+            await InsertCompanyAsync(
+                connection,
+                transaction,
+                companyId,
+                normalizedSiteName,
+                normalizedStoreId,
+                CreateHiddenPassword(),
+                now,
+                cancellationToken);
+        }
+
+        var existingLogoDataUrl = await ReadCompanyLogoDataUrlAsync(
+            connection,
+            transaction,
+            companyId,
+            cancellationToken);
+        var logoDataUrl = request.RemoveLogo
+            ? null
+            : providedLogoDataUrl ?? existingLogoDataUrl;
+
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            UPDATE Companies
+            SET CompanyName = @siteName,
+                PaletteKey = @paletteKey,
+                PrimaryColor = @primaryColor,
+                SecondaryColor = @secondaryColor,
+                BackgroundColor = @backgroundColor,
+                MenuTheme = @menuTheme,
+                MenuMode = @menuMode,
+                LogoDataUrl = @logoDataUrl,
+                UpdatedAtUtc = @updatedAtUtc
+            WHERE Id = @id;
+            """;
+        command.Parameters.AddWithValue("@id", companyId);
+        command.Parameters.AddWithValue("@siteName", normalizedSiteName);
+        command.Parameters.AddWithValue("@paletteKey", paletteKey);
+        command.Parameters.AddWithValue("@primaryColor", palette.PrimaryColor);
+        command.Parameters.AddWithValue("@secondaryColor", palette.SecondaryColor);
+        command.Parameters.AddWithValue("@backgroundColor", palette.BackgroundColor);
+        command.Parameters.AddWithValue("@menuTheme", palette.MenuTheme);
+        command.Parameters.AddWithValue("@menuMode", palette.MenuMode);
+        AddNullableTextParameter(command, "@logoDataUrl", logoDataUrl);
+        command.Parameters.AddWithValue("@updatedAtUtc", now);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+
+        return new BrandingSettingsResponse(
+            normalizedStoreId,
+            normalizedSiteName,
+            paletteKey,
+            palette.PrimaryColor,
+            palette.SecondaryColor,
+            palette.BackgroundColor,
+            palette.MenuTheme,
+            palette.MenuMode,
+            logoDataUrl,
+            now);
     }
 
     public async Task<IReadOnlyList<CustomerResponse>> ListCustomersAsync(
@@ -4447,6 +4639,25 @@ public sealed class WhatsappRepository
         return await command.ExecuteScalarAsync(cancellationToken) as string;
     }
 
+    private static async Task<string?> ReadCompanyLogoDataUrlAsync(
+        NpgsqlConnection connection,
+        NpgsqlTransaction transaction,
+        string companyId,
+        CancellationToken cancellationToken)
+    {
+        var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText =
+            """
+            SELECT LogoDataUrl
+            FROM Companies
+            WHERE Id = @id
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@id", companyId);
+        return await command.ExecuteScalarAsync(cancellationToken) as string;
+    }
+
     private static async Task InsertCompanyAsync(
         NpgsqlConnection connection,
         NpgsqlTransaction transaction,
@@ -5068,6 +5279,132 @@ public sealed class WhatsappRepository
     private static string? NormalizeOptionalText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static BrandingSettingsResponse CreateBrandingSettingsResponse(
+        string storeId,
+        string siteName,
+        string? paletteKey,
+        string? primaryColor,
+        string? secondaryColor,
+        string? backgroundColor,
+        string? menuTheme,
+        string? menuMode,
+        string? logoDataUrl,
+        string updatedAtUtc)
+    {
+        var normalizedPaletteKey = NormalizeBrandPaletteKey(paletteKey);
+        var palette = BrandPalettes[normalizedPaletteKey];
+
+        return new BrandingSettingsResponse(
+            storeId,
+            siteName,
+            normalizedPaletteKey,
+            NormalizeHexColor(primaryColor, palette.PrimaryColor),
+            NormalizeHexColor(secondaryColor, palette.SecondaryColor),
+            NormalizeHexColor(backgroundColor, palette.BackgroundColor),
+            NormalizeBrandMenuTheme(menuTheme, palette.MenuTheme),
+            NormalizeBrandMenuMode(menuMode, palette.MenuMode),
+            logoDataUrl,
+            updatedAtUtc);
+    }
+
+    private static string NormalizeBrandPaletteKey(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? DefaultBrandPaletteKey
+            : value.Trim().ToUpperInvariant();
+
+        return BrandPalettes.ContainsKey(normalized) ? normalized : DefaultBrandPaletteKey;
+    }
+
+    private static string NormalizeBrandMenuTheme(string? value, string fallback)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? fallback
+            : value.Trim().ToUpperInvariant();
+
+        return normalized is "ELEGANTE" or "ACAI" or "CLASSICO" or "MINIMALISTA" or "PREMIUM"
+            ? normalized
+            : fallback;
+    }
+
+    private static string NormalizeBrandMenuMode(string? value, string fallback)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value)
+            ? fallback
+            : value.Trim().ToUpperInvariant();
+
+        return normalized is "CLARO" or "ESCURO" ? normalized : fallback;
+    }
+
+    private static string NormalizeHexColor(string? value, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return fallback;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length != 7 || trimmed[0] != '#')
+        {
+            return fallback;
+        }
+
+        for (var index = 1; index < trimmed.Length; index++)
+        {
+            if (!Uri.IsHexDigit(trimmed[index]))
+            {
+                return fallback;
+            }
+        }
+
+        return trimmed.ToUpperInvariant();
+    }
+
+    private static string? NormalizeLogoDataUrl(string? value)
+    {
+        var trimmed = NormalizeOptionalText(value);
+        if (trimmed is null)
+        {
+            return null;
+        }
+
+        if (trimmed.Length > 750_000)
+        {
+            throw new InvalidOperationException("Logo is too large.");
+        }
+
+        var commaIndex = trimmed.IndexOf(',');
+        if (commaIndex <= 0)
+        {
+            throw new InvalidOperationException("Logo must be a data URL.");
+        }
+
+        var header = trimmed[..commaIndex].ToLowerInvariant();
+        if (header is not "data:image/png;base64" and
+            not "data:image/jpeg;base64" and
+            not "data:image/webp;base64")
+        {
+            throw new InvalidOperationException("Logo must be PNG, JPEG or WEBP.");
+        }
+
+        byte[] bytes;
+        try
+        {
+            bytes = Convert.FromBase64String(trimmed[(commaIndex + 1)..]);
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException("Logo data is invalid.", ex);
+        }
+
+        if (bytes.Length > 512 * 1024)
+        {
+            throw new InvalidOperationException("Logo is too large.");
+        }
+
+        return trimmed;
     }
 
     private static void AddFeedbackAnalysisParameters(
@@ -5961,6 +6298,13 @@ public sealed class WhatsappRepository
 
         public List<DashboardRecentOrderItemResponse> Items { get; } = new();
     }
+
+    private sealed record CompanyBrandPalette(
+        string PrimaryColor,
+        string SecondaryColor,
+        string BackgroundColor,
+        string MenuTheme,
+        string MenuMode);
 
     private static async Task<bool> TableHasColumnAsync(
         NpgsqlConnection connection,

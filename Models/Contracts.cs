@@ -819,6 +819,25 @@ public sealed record CompanyLoginResponse(
     string CompanyPhone,
     string Username);
 
+public sealed record BrandingSettingsResponse(
+    string StoreId,
+    string SiteName,
+    string PaletteKey,
+    string PrimaryColor,
+    string SecondaryColor,
+    string BackgroundColor,
+    string MenuTheme,
+    string MenuMode,
+    string? LogoDataUrl,
+    string UpdatedAtUtc);
+
+public sealed record BrandingSettingsUpsertRequest(
+    [param: Required] string StoreId,
+    [param: Required] string SiteName,
+    [param: Required] string PaletteKey,
+    string? LogoDataUrl,
+    bool RemoveLogo);
+
 public sealed record InternalCompanySyncRequest(
     [param: Required] string CompanyName,
     [param: Required] string CompanyPhone,
