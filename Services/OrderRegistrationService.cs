@@ -5,10 +5,14 @@ namespace AtendenteWhatssApp.Services;
 public sealed class OrderRegistrationService
 {
     private readonly WhatsappRepository _repository;
+    private readonly StaffNotificationService _staffNotificationService;
 
-    public OrderRegistrationService(WhatsappRepository repository)
+    public OrderRegistrationService(
+        WhatsappRepository repository,
+        StaffNotificationService staffNotificationService)
     {
         _repository = repository;
+        _staffNotificationService = staffNotificationService;
     }
 
     public async Task<OrderRegistrationResult> RegistrarPedidoAsync(
@@ -69,6 +73,13 @@ public sealed class OrderRegistrationService
             items);
 
         var result = await _repository.SaveOrderAsync(order, cancellationToken);
+        if (!result.AlreadyExisted)
+        {
+            await _staffNotificationService.NotifyOrderFinalizedAsync(
+                storeId,
+                conversationPhoneNumber,
+                cancellationToken);
+        }
 
         await _repository.ClearConversationAsync(storeId, conversationPhoneNumber, cancellationToken);
 

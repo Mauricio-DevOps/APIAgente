@@ -697,6 +697,15 @@ public sealed record AgentPersonaSettingsUpsertRequest(
     string? CustomInstructions,
     IReadOnlyList<AgentPersonaFaqUpsert>? Faqs);
 
+public sealed record AgentNotificationSettingsResponse(
+    string StoreId,
+    string? StaffNotificationPhoneNumber,
+    string UpdatedAtUtc);
+
+public sealed record AgentNotificationSettingsUpsertRequest(
+    [param: Required] string StoreId,
+    string? StaffNotificationPhoneNumber);
+
 public sealed record AgentPersonaFaqResponse(
     string Id,
     string Question,

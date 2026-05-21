@@ -238,6 +238,13 @@ public sealed class WhatsappRepository
                 FOREIGN KEY (StoreId) REFERENCES AgentPersonaSettings(StoreId) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS AgentNotificationSettings (
+                StoreId TEXT PRIMARY KEY,
+                StaffNotificationPhoneNumber TEXT NULL,
+                CreatedAtUtc TEXT NOT NULL,
+                UpdatedAtUtc TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS Products (
                 Id TEXT PRIMARY KEY,
                 StoreId TEXT NOT NULL,
@@ -1416,6 +1423,69 @@ public sealed class WhatsappRepository
 
         await transaction.CommitAsync(cancellationToken);
         return await GetAgentPersonaAsync(storeId, cancellationToken);
+    }
+
+    public async Task<AgentNotificationSettingsResponse> GetAgentNotificationSettingsAsync(
+        string storeId,
+        CancellationToken cancellationToken)
+    {
+        var normalizedStoreId = storeId.Trim();
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            SELECT StaffNotificationPhoneNumber, UpdatedAtUtc
+            FROM AgentNotificationSettings
+            WHERE StoreId = @storeId
+            LIMIT 1;
+            """;
+        command.Parameters.AddWithValue("@storeId", normalizedStoreId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new AgentNotificationSettingsResponse(
+                normalizedStoreId,
+                StaffNotificationPhoneNumber: null,
+                UpdatedAtUtc: string.Empty);
+        }
+
+        return new AgentNotificationSettingsResponse(
+            normalizedStoreId,
+            reader.IsDBNull(0) ? null : reader.GetString(0),
+            reader.GetString(1));
+    }
+
+    public async Task<AgentNotificationSettingsResponse> UpsertAgentNotificationSettingsAsync(
+        AgentNotificationSettingsUpsertRequest request,
+        CancellationToken cancellationToken)
+    {
+        var storeId = request.StoreId.Trim();
+        var phoneNumber = NormalizeStaffNotificationPhoneNumber(request.StaffNotificationPhoneNumber);
+        var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO AgentNotificationSettings
+                (StoreId, StaffNotificationPhoneNumber, CreatedAtUtc, UpdatedAtUtc)
+            VALUES
+                (@storeId, @phoneNumber, @updatedAtUtc, @updatedAtUtc)
+            ON CONFLICT(StoreId) DO UPDATE SET
+                StaffNotificationPhoneNumber = excluded.StaffNotificationPhoneNumber,
+                UpdatedAtUtc = excluded.UpdatedAtUtc;
+            """;
+        command.Parameters.AddWithValue("@storeId", storeId);
+        command.Parameters.AddWithValue("@phoneNumber", (object?)phoneNumber ?? DBNull.Value);
+        command.Parameters.AddWithValue("@updatedAtUtc", now);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+
+        return new AgentNotificationSettingsResponse(storeId, phoneNumber, now);
     }
 
     public async Task<IReadOnlyList<AgentAutomatedCampaignResponse>> GetAutomatedCampaignsAsync(
@@ -5068,6 +5138,23 @@ public sealed class WhatsappRepository
     private static string? NormalizeOptionalText(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static string? NormalizeStaffNotificationPhoneNumber(string? value)
+    {
+        var digits = PhoneNumberNormalizer.NormalizeDigits(value);
+        if (string.IsNullOrWhiteSpace(digits))
+        {
+            return null;
+        }
+
+        if (digits.StartsWith("55", StringComparison.Ordinal))
+        {
+            return $"+{digits}";
+        }
+
+        var nationalPhone = PhoneNumberNormalizer.ToBrazilNationalPhone(value);
+        return string.IsNullOrWhiteSpace(nationalPhone) ? null : $"+55{nationalPhone}";
     }
 
     private static void AddFeedbackAnalysisParameters(

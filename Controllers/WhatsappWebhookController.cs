@@ -16,6 +16,7 @@ public sealed class WhatsappWebhookController : ControllerBase
         [FromForm] TwilioWhatsappWebhookRequest request,
         [FromServices] WhatsappRepository repository,
         [FromServices] AgentFeedbackService feedbackService,
+        [FromServices] StaffNotificationService staffNotificationService,
         CancellationToken cancellationToken)
     {
         var message = request.Body?.Trim();
@@ -23,6 +24,8 @@ public sealed class WhatsappWebhookController : ControllerBase
         var storeId = request.To?.Trim();
         var mediaUrl = request.MediaUrl0?.Trim();
         var mediaContentType = request.MediaContentType0?.Trim();
+        var hasImage = request.NumMedia.GetValueOrDefault() > 0 &&
+            mediaContentType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) == true;
         var hasAudio = request.NumMedia.GetValueOrDefault() > 0 &&
             !string.IsNullOrWhiteSpace(mediaUrl) &&
             mediaContentType?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) == true;
@@ -32,7 +35,7 @@ public sealed class WhatsappWebhookController : ControllerBase
             return TwimlMessage("WhatsApp store key is missing.");
         }
 
-        if ((string.IsNullOrWhiteSpace(message) && !hasAudio) || string.IsNullOrWhiteSpace(phoneNumber))
+        if ((string.IsNullOrWhiteSpace(message) && !hasAudio && !hasImage) || string.IsNullOrWhiteSpace(phoneNumber))
         {
             return TwimlMessage("Invalid WhatsApp payload.");
         }
@@ -48,7 +51,7 @@ public sealed class WhatsappWebhookController : ControllerBase
                 phoneNumber,
                 WhatsappConversationMessageDirections.Inbound,
                 WhatsappConversationMessageTypes.Customer,
-                string.IsNullOrWhiteSpace(message) ? "Audio recebido." : message,
+                ResolveInboundMessageText(message, hasImage),
                 messageId,
                 sourceJobId: null,
                 WhatsappConversationMessageStatuses.Received,
@@ -62,6 +65,29 @@ public sealed class WhatsappWebhookController : ControllerBase
             if (!isAgentEnabled)
             {
                 return EmptyTwiml();
+            }
+
+            if (hasImage)
+            {
+                const string imageResponseMessage = "Recebemos sua imagem. Vou encaminhar para um atendente e ele ir\u00e1 entrar em contato o mais r\u00e1pido poss\u00edvel.";
+                await repository.SetWhatsappAgentEnabledAsync(
+                    storeId,
+                    phoneNumber,
+                    isAgentEnabled: false,
+                    cancellationToken);
+
+                await staffNotificationService.NotifyImageReceivedAsync(
+                    storeId,
+                    phoneNumber,
+                    cancellationToken);
+
+                await RecordSystemTwimlResponseAsync(
+                    repository,
+                    storeId,
+                    phoneNumber,
+                    imageResponseMessage,
+                    cancellationToken);
+                return TwimlMessage(imageResponseMessage);
             }
 
             var feedbackResult = await feedbackService.TryPrepareIncomingResponseAsync(
@@ -124,6 +150,16 @@ public sealed class WhatsappWebhookController : ControllerBase
     private ContentResult EmptyTwiml()
     {
         return Content("<Response></Response>", "application/xml");
+    }
+
+    private static string ResolveInboundMessageText(string? message, bool hasImage)
+    {
+        if (!string.IsNullOrWhiteSpace(message))
+        {
+            return message.Trim();
+        }
+
+        return hasImage ? "Imagem recebida." : "Audio recebido.";
     }
 
     private static async Task RecordSystemTwimlResponseAsync(

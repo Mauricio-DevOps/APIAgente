@@ -65,6 +65,48 @@ public sealed class AdminAgentController : ControllerBase
         return Ok(saved);
     }
 
+    [HttpGet("notifications/settings")]
+    public async Task<IActionResult> GetNotificationSettings(
+        [FromQuery] string? storeId,
+        [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(storeId))
+        {
+            return Problem(
+                title: "Invalid agent notification settings query",
+                detail: "storeId is required.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        return Ok(await repository.GetAgentNotificationSettingsAsync(storeId.Trim(), cancellationToken));
+    }
+
+    [HttpPut("notifications/settings")]
+    public async Task<IActionResult> SaveNotificationSettings(
+        [FromBody] AgentNotificationSettingsUpsertRequest request,
+        [FromServices] WhatsappRepository repository,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.StoreId))
+        {
+            return Problem(
+                title: "Invalid agent notification settings request",
+                detail: "storeId is required.",
+                statusCode: StatusCodes.Status400BadRequest);
+        }
+
+        var saved = await repository.UpsertAgentNotificationSettingsAsync(
+            request with
+            {
+                StoreId = request.StoreId.Trim(),
+                StaffNotificationPhoneNumber = request.StaffNotificationPhoneNumber?.Trim()
+            },
+            cancellationToken);
+
+        return Ok(saved);
+    }
+
     [HttpGet("feedback/settings")]
     public async Task<IActionResult> GetFeedbackSettings(
         [FromQuery] string? storeId,
