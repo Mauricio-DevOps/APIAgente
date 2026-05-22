@@ -86,6 +86,7 @@ public sealed class AdminAgentController : ControllerBase
     public async Task<IActionResult> SaveNotificationSettings(
         [FromBody] AgentNotificationSettingsUpsertRequest request,
         [FromServices] WhatsappRepository repository,
+        [FromServices] ILogger<AdminAgentController> logger,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.StoreId))
@@ -96,6 +97,11 @@ public sealed class AdminAgentController : ControllerBase
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        logger.LogInformation(
+            "Saving agent notification settings. StoreId={StoreId}; SubmittedResponsiblePhone={SubmittedResponsiblePhone}.",
+            request.StoreId.Trim(),
+            request.StaffNotificationPhoneNumber?.Trim());
+
         var saved = await repository.UpsertAgentNotificationSettingsAsync(
             request with
             {
@@ -103,6 +109,12 @@ public sealed class AdminAgentController : ControllerBase
                 StaffNotificationPhoneNumber = request.StaffNotificationPhoneNumber?.Trim()
             },
             cancellationToken);
+
+        logger.LogInformation(
+            "Agent notification settings saved. StoreId={StoreId}; SavedResponsiblePhone={SavedResponsiblePhone}; UpdatedAtUtc={UpdatedAtUtc}.",
+            saved.StoreId,
+            saved.StaffNotificationPhoneNumber,
+            saved.UpdatedAtUtc);
 
         return Ok(saved);
     }

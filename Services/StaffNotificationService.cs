@@ -24,6 +24,7 @@ public sealed class StaffNotificationService
         return SendStaffNotificationAsync(
             storeId,
             phoneNumber,
+            "human_handoff",
             "O cliente {0} solicitou um atendimento.",
             cancellationToken);
     }
@@ -36,6 +37,7 @@ public sealed class StaffNotificationService
         return SendStaffNotificationAsync(
             storeId,
             phoneNumber,
+            "order_finalized",
             "O cliente {0} finalizou um pedido.",
             cancellationToken);
     }
@@ -48,6 +50,7 @@ public sealed class StaffNotificationService
         return SendStaffNotificationAsync(
             storeId,
             phoneNumber,
+            "image_received",
             "O cliente {0} enviou uma imagem.",
             cancellationToken);
     }
@@ -55,6 +58,7 @@ public sealed class StaffNotificationService
     private async Task SendStaffNotificationAsync(
         string storeId,
         string phoneNumber,
+        string notificationType,
         string messageFormat,
         CancellationToken cancellationToken)
     {
@@ -62,13 +66,28 @@ public sealed class StaffNotificationService
         {
             var trimmedStoreId = storeId.Trim();
             var trimmedPhoneNumber = phoneNumber.Trim();
+            _logger.LogInformation(
+                "Preparing staff notification {NotificationType}. StoreId={StoreId}; CustomerPhone={CustomerPhone}.",
+                notificationType,
+                trimmedStoreId,
+                trimmedPhoneNumber);
+
             var settings = await _repository.GetAgentNotificationSettingsAsync(
                 trimmedStoreId,
                 cancellationToken);
+            _logger.LogInformation(
+                "Staff notification settings loaded for {NotificationType}. StoreId={StoreId}; HasResponsiblePhone={HasResponsiblePhone}; ResponsiblePhone={ResponsiblePhone}; UpdatedAtUtc={UpdatedAtUtc}.",
+                notificationType,
+                trimmedStoreId,
+                !string.IsNullOrWhiteSpace(settings.StaffNotificationPhoneNumber),
+                settings.StaffNotificationPhoneNumber,
+                settings.UpdatedAtUtc);
+
             if (string.IsNullOrWhiteSpace(settings.StaffNotificationPhoneNumber))
             {
-                _logger.LogInformation(
-                    "Skipping staff notification for store {StoreId} because no responsible phone number is configured.",
+                _logger.LogWarning(
+                    "Skipping staff notification {NotificationType} for store {StoreId} because no responsible phone number is configured for this exact StoreId.",
+                    notificationType,
                     trimmedStoreId);
                 return;
             }
@@ -78,21 +97,48 @@ public sealed class StaffNotificationService
                 trimmedPhoneNumber,
                 cancellationToken);
 
-            await _twilioMessageClient.SendWhatsappMessageAsync(
+            _logger.LogInformation(
+                "Sending staff notification {NotificationType}. From={StoreId}; To={ResponsiblePhone}; CustomerLabel={CustomerLabel}.",
+                notificationType,
+                trimmedStoreId,
+                settings.StaffNotificationPhoneNumber,
+                customerLabel);
+
+            var sendResult = await _twilioMessageClient.SendWhatsappMessageAsync(
                 from: trimmedStoreId,
                 to: settings.StaffNotificationPhoneNumber,
                 body: string.Format(messageFormat, customerLabel),
                 cancellationToken);
+
+            _logger.LogInformation(
+                "Staff notification {NotificationType} sent. StoreId={StoreId}; ResponsiblePhone={ResponsiblePhone}; TwilioSid={TwilioSid}; TwilioStatus={TwilioStatus}.",
+                notificationType,
+                trimmedStoreId,
+                settings.StaffNotificationPhoneNumber,
+                sendResult.Sid,
+                sendResult.Status);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
+        catch (ExternalApiException ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Twilio rejected staff notification {NotificationType}. StoreId={StoreId}; CustomerPhone={CustomerPhone}; StatusCode={StatusCode}; ResponseBody={ResponseBody}.",
+                notificationType,
+                storeId,
+                phoneNumber,
+                ex.StatusCode,
+                ex.ResponseBody);
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(
                 ex,
-                "Could not send staff notification for store {StoreId} and phone {PhoneNumber}.",
+                "Could not send staff notification {NotificationType} for store {StoreId} and phone {PhoneNumber}.",
+                notificationType,
                 storeId,
                 phoneNumber);
         }
