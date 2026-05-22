@@ -86,6 +86,7 @@ public sealed class AdminAgentController : ControllerBase
     public async Task<IActionResult> SaveNotificationSettings(
         [FromBody] AgentNotificationSettingsUpsertRequest request,
         [FromServices] WhatsappRepository repository,
+        [FromServices] ApplicationLogService applicationLogService,
         [FromServices] ILogger<AdminAgentController> logger,
         CancellationToken cancellationToken)
     {
@@ -97,6 +98,9 @@ public sealed class AdminAgentController : ControllerBase
                 statusCode: StatusCodes.Status400BadRequest);
         }
 
+        await applicationLogService.RecordAsync(
+            $"Saving agent notification settings. StoreId={request.StoreId.Trim()}; SubmittedResponsiblePhone={request.StaffNotificationPhoneNumber?.Trim()}.",
+            cancellationToken);
         logger.LogInformation(
             "Saving agent notification settings. StoreId={StoreId}; SubmittedResponsiblePhone={SubmittedResponsiblePhone}.",
             request.StoreId.Trim(),
@@ -110,6 +114,9 @@ public sealed class AdminAgentController : ControllerBase
             },
             cancellationToken);
 
+        await applicationLogService.RecordAsync(
+            $"Agent notification settings saved. StoreId={saved.StoreId}; SavedResponsiblePhone={saved.StaffNotificationPhoneNumber}; UpdatedAtUtc={saved.UpdatedAtUtc}.",
+            cancellationToken);
         logger.LogInformation(
             "Agent notification settings saved. StoreId={StoreId}; SavedResponsiblePhone={SavedResponsiblePhone}; UpdatedAtUtc={UpdatedAtUtc}.",
             saved.StoreId,

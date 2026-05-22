@@ -6,13 +6,16 @@ public sealed class HumanHandoffService
 
     private readonly WhatsappRepository _repository;
     private readonly StaffNotificationService _staffNotificationService;
+    private readonly ApplicationLogService _applicationLogService;
 
     public HumanHandoffService(
         WhatsappRepository repository,
-        StaffNotificationService staffNotificationService)
+        StaffNotificationService staffNotificationService,
+        ApplicationLogService applicationLogService)
     {
         _repository = repository;
         _staffNotificationService = staffNotificationService;
+        _applicationLogService = applicationLogService;
     }
 
     public async Task<string> SolicitarAtendimentoHumanoAsync(
@@ -21,10 +24,18 @@ public sealed class HumanHandoffService
         string message,
         CancellationToken cancellationToken)
     {
+        await _applicationLogService.RecordAsync(
+            $"Human handoff requested. StoreId={storeId}; PhoneNumber={phoneNumber}.",
+            cancellationToken);
+
         await _repository.SetWhatsappAgentEnabledAsync(
             storeId,
             phoneNumber,
             isAgentEnabled: false,
+            cancellationToken);
+
+        await _applicationLogService.RecordAsync(
+            $"WhatsApp agent disabled for human handoff. StoreId={storeId}; PhoneNumber={phoneNumber}.",
             cancellationToken);
 
         await _staffNotificationService.NotifyHumanHandoffRequestedAsync(

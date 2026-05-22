@@ -6,13 +6,16 @@ public sealed class OrderRegistrationService
 {
     private readonly WhatsappRepository _repository;
     private readonly StaffNotificationService _staffNotificationService;
+    private readonly ApplicationLogService _applicationLogService;
 
     public OrderRegistrationService(
         WhatsappRepository repository,
-        StaffNotificationService staffNotificationService)
+        StaffNotificationService staffNotificationService,
+        ApplicationLogService applicationLogService)
     {
         _repository = repository;
         _staffNotificationService = staffNotificationService;
+        _applicationLogService = applicationLogService;
     }
 
     public async Task<OrderRegistrationResult> RegistrarPedidoAsync(
@@ -73,11 +76,25 @@ public sealed class OrderRegistrationService
             items);
 
         var result = await _repository.SaveOrderAsync(order, cancellationToken);
+        await _applicationLogService.RecordAsync(
+            $"Order save completed. StoreId={storeId}; PhoneNumber={conversationPhoneNumber}; OrderId={result.OrderId}; SourceMessageId={sourceMessageId}; AlreadyExisted={result.AlreadyExisted}.",
+            cancellationToken);
+
         if (!result.AlreadyExisted)
         {
+            await _applicationLogService.RecordAsync(
+                $"Sending staff notification for finalized order. StoreId={storeId}; PhoneNumber={conversationPhoneNumber}; OrderId={result.OrderId}.",
+                cancellationToken);
+
             await _staffNotificationService.NotifyOrderFinalizedAsync(
                 storeId,
                 conversationPhoneNumber,
+                cancellationToken);
+        }
+        else
+        {
+            await _applicationLogService.RecordAsync(
+                $"Skipping finalized order staff notification because order already existed. StoreId={storeId}; PhoneNumber={conversationPhoneNumber}; OrderId={result.OrderId}.",
                 cancellationToken);
         }
 

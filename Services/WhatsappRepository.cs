@@ -245,6 +245,12 @@ public sealed class WhatsappRepository
                 UpdatedAtUtc TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ApplicationLogs (
+                Id TEXT PRIMARY KEY,
+                CreatedAtUtc TEXT NOT NULL,
+                Text TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS Products (
                 Id TEXT PRIMARY KEY,
                 StoreId TEXT NOT NULL,
@@ -422,6 +428,7 @@ public sealed class WhatsappRepository
             CREATE INDEX IF NOT EXISTS IX_WhatsappConversationMessages_Store_Phone_Created ON WhatsappConversationMessages (StoreId, PhoneNumber, CreatedAtUtc);
             CREATE INDEX IF NOT EXISTS IX_WhatsappConversationMessages_Store_Created ON WhatsappConversationMessages (StoreId, CreatedAtUtc);
             CREATE INDEX IF NOT EXISTS IX_WhatsappPendingCustomerActions_Lookup ON WhatsappPendingCustomerActions (StoreId, PhoneNumber, ActionType, Status, CreatedAtUtc);
+            CREATE INDEX IF NOT EXISTS IX_ApplicationLogs_CreatedAtUtc ON ApplicationLogs (CreatedAtUtc);
             """;
 
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -1486,6 +1493,35 @@ public sealed class WhatsappRepository
         await command.ExecuteNonQueryAsync(cancellationToken);
 
         return new AgentNotificationSettingsResponse(storeId, phoneNumber, now);
+    }
+
+    public async Task RecordApplicationLogAsync(
+        string text,
+        CancellationToken cancellationToken)
+    {
+        var normalizedText = text.Trim();
+        if (normalizedText.Length == 0)
+        {
+            return;
+        }
+
+        var now = DateTime.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO ApplicationLogs
+                (Id, CreatedAtUtc, Text)
+            VALUES
+                (@id, @createdAtUtc, @text);
+            """;
+        command.Parameters.AddWithValue("@id", Guid.NewGuid().ToString("N"));
+        command.Parameters.AddWithValue("@createdAtUtc", now);
+        command.Parameters.AddWithValue("@text", normalizedText);
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<AgentAutomatedCampaignResponse>> GetAutomatedCampaignsAsync(

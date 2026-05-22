@@ -17,6 +17,7 @@ public sealed class WhatsappWebhookController : ControllerBase
         [FromServices] WhatsappRepository repository,
         [FromServices] AgentFeedbackService feedbackService,
         [FromServices] StaffNotificationService staffNotificationService,
+        [FromServices] ApplicationLogService applicationLogService,
         CancellationToken cancellationToken)
     {
         var message = request.Body?.Trim();
@@ -64,16 +65,27 @@ public sealed class WhatsappWebhookController : ControllerBase
                 cancellationToken);
             if (!isAgentEnabled)
             {
+                await applicationLogService.RecordAsync(
+                    $"Skipping automatic WhatsApp response because agent is disabled. StoreId={storeId}; PhoneNumber={phoneNumber}; HasImage={hasImage}; HasAudio={hasAudio}; NumMedia={request.NumMedia.GetValueOrDefault()}; MediaContentType={mediaContentType}.",
+                    cancellationToken);
                 return EmptyTwiml();
             }
 
             if (hasImage)
             {
                 const string imageResponseMessage = "Recebemos sua imagem. Vou encaminhar para um atendente e ele ir\u00e1 entrar em contato o mais r\u00e1pido poss\u00edvel.";
+                await applicationLogService.RecordAsync(
+                    $"Image received with agent enabled. StoreId={storeId}; PhoneNumber={phoneNumber}; MessageSid={messageId}; NumMedia={request.NumMedia.GetValueOrDefault()}; MediaContentType={mediaContentType}.",
+                    cancellationToken);
+
                 await repository.SetWhatsappAgentEnabledAsync(
                     storeId,
                     phoneNumber,
                     isAgentEnabled: false,
+                    cancellationToken);
+
+                await applicationLogService.RecordAsync(
+                    $"WhatsApp agent disabled after image received. StoreId={storeId}; PhoneNumber={phoneNumber}; MessageSid={messageId}.",
                     cancellationToken);
 
                 await staffNotificationService.NotifyImageReceivedAsync(
