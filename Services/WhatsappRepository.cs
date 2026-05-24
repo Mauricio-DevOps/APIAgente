@@ -294,6 +294,9 @@ public sealed class WhatsappRepository
                 AiOutputJson TEXT NOT NULL,
                 GeneralObservation TEXT NULL,
                 TotalCents INTEGER NOT NULL DEFAULT 0,
+                RestaurantOrderId TEXT NULL,
+                PaymentStatus TEXT NULL,
+                PaymentCheckoutUrl TEXT NULL,
                 CreatedAtUtc TEXT NOT NULL,
                 UpdatedAtUtc TEXT NOT NULL,
                 UNIQUE (StoreId, SourceMessageId)
@@ -489,6 +492,21 @@ public sealed class WhatsappRepository
             var alterCommand = connection.CreateCommand();
             alterCommand.CommandText = "ALTER TABLE WhatsappMessageJobs ADD COLUMN FeedbackSolicitationId TEXT NULL;";
             await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        foreach (var column in new[]
+        {
+            "RestaurantOrderId",
+            "PaymentStatus",
+            "PaymentCheckoutUrl"
+        })
+        {
+            if (!await TableHasColumnAsync(connection, "Orders", column, cancellationToken))
+            {
+                var alterCommand = connection.CreateCommand();
+                alterCommand.CommandText = $"ALTER TABLE Orders ADD COLUMN {column} TEXT NULL;";
+                await alterCommand.ExecuteNonQueryAsync(cancellationToken);
+            }
         }
 
         foreach (var column in new[]
@@ -2928,7 +2946,7 @@ public sealed class WhatsappRepository
         selectCommand.Transaction = transaction;
         selectCommand.CommandText =
             """
-            SELECT Id, Status, TotalCents
+            SELECT Id, Status, TotalCents, RestaurantOrderId, PaymentStatus, PaymentCheckoutUrl
             FROM Orders
             WHERE StoreId = @storeId
               AND SourceMessageId = @sourceMessageId
@@ -2946,7 +2964,10 @@ public sealed class WhatsappRepository
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.GetInt64(2),
-                    AlreadyExisted: true);
+                    AlreadyExisted: true,
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5));
             }
         }
 
@@ -3027,7 +3048,7 @@ public sealed class WhatsappRepository
         selectCommand.Transaction = transaction;
         selectCommand.CommandText =
             """
-            SELECT Id, Status, TotalCents
+            SELECT Id, Status, TotalCents, RestaurantOrderId, PaymentStatus, PaymentCheckoutUrl
             FROM Orders
             WHERE StoreId = @storeId
               AND SourceMessageId = @sourceMessageId
@@ -3045,7 +3066,10 @@ public sealed class WhatsappRepository
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.GetInt64(2),
-                    AlreadyExisted: true);
+                    AlreadyExisted: true,
+                    reader.IsDBNull(3) ? null : reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetString(5));
             }
         }
 
@@ -3137,6 +3161,35 @@ public sealed class WhatsappRepository
         await transaction.CommitAsync(cancellationToken);
 
         return new OrderRegistrationResult(order.Id, order.Status, order.TotalCents, AlreadyExisted: false);
+    }
+
+    public async Task UpdateOrderPaymentAsync(
+        string storeId,
+        string orderId,
+        RestaurantPaymentLinkResult payment,
+        CancellationToken cancellationToken)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(cancellationToken);
+
+        var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            UPDATE Orders
+            SET RestaurantOrderId = @restaurantOrderId,
+                PaymentStatus = @paymentStatus,
+                PaymentCheckoutUrl = @paymentCheckoutUrl,
+                UpdatedAtUtc = @updatedAtUtc
+            WHERE StoreId = @storeId
+              AND Id = @orderId;
+            """;
+        command.Parameters.AddWithValue("@restaurantOrderId", payment.OrderId);
+        command.Parameters.AddWithValue("@paymentStatus", payment.PaymentStatus);
+        command.Parameters.AddWithValue("@paymentCheckoutUrl", (object?)payment.CheckoutUrl ?? DBNull.Value);
+        command.Parameters.AddWithValue("@updatedAtUtc", DateTime.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("@storeId", storeId.Trim());
+        command.Parameters.AddWithValue("@orderId", orderId.Trim());
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<ActiveOrderData>> GetActiveOrdersAsync(

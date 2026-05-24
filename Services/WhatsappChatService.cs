@@ -125,7 +125,7 @@ public sealed class WhatsappChatService
                 }
 
                 var orderPayload = EnsureOrderHasCustomerAddress(outputTextResponse.Pedido, customerContext.Customer);
-                await _orderRegistrationService.RegistrarPedidoAsync(
+                var orderRegistration = await _orderRegistrationService.RegistrarPedidoAsync(
                     new OrderRegistrationCommand(
                         storeId,
                         phoneNumber,
@@ -138,7 +138,7 @@ public sealed class WhatsappChatService
                         orderPayload),
                     cancellationToken);
 
-                return outputTextResponse.Texto;
+                return BuildOrderResponseText(outputTextResponse.Texto, orderRegistration);
 
             case 3:
                 return await _orderConsultationService.ConsultarPedidosAtivosAsync(
@@ -353,6 +353,27 @@ public sealed class WhatsappChatService
         builder.AppendLine("[MENSAGEM DO CLIENTE]");
         builder.Append(message);
         return builder.ToString();
+    }
+
+    private static string BuildOrderResponseText(string responseText, OrderRegistrationResult orderRegistration)
+    {
+        if (!string.IsNullOrWhiteSpace(orderRegistration.PaymentCheckoutUrl))
+        {
+            return string.Concat(
+                responseText.Trim(),
+                "\n\nPara finalizar, pague seu pedido por este link: ",
+                orderRegistration.PaymentCheckoutUrl.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(orderRegistration.PaymentMessage))
+        {
+            return string.Concat(
+                responseText.Trim(),
+                "\n\n",
+                orderRegistration.PaymentMessage.Trim());
+        }
+
+        return responseText;
     }
 
     private static string FormatDescription(string? description)
