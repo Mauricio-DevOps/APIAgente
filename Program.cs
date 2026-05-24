@@ -1,6 +1,7 @@
 using AtendenteWhatssApp.Extensions;
 using AtendenteWhatssApp.Options;
 using AtendenteWhatssApp.Services;
+using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 AddLocalSupabaseEnvironment(builder.Configuration, builder.Environment.ContentRootPath);
@@ -11,6 +12,11 @@ builder.Services.Configure<SeedCompanyOptions>(builder.Configuration.GetSection(
 builder.Services.Configure<InternalApiOptions>(builder.Configuration.GetSection(InternalApiOptions.SectionName));
 builder.Services.Configure<TwilioOptions>(builder.Configuration.GetSection(TwilioOptions.SectionName));
 builder.Services.AddHttpClient<PromptApiClient>();
+builder.Services.AddHttpClient<RestaurantPaymentClient>((serviceProvider, client) =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<InternalApiOptions>>().Value;
+    client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(options.BaseUrl) ? "http://localhost:5100" : options.BaseUrl);
+});
 builder.Services.AddHttpClient<TwilioMessageClient>(client =>
 {
     client.BaseAddress = new Uri("https://api.twilio.com/");

@@ -7,15 +7,18 @@ public sealed class OrderRegistrationService
     private readonly WhatsappRepository _repository;
     private readonly StaffNotificationService _staffNotificationService;
     private readonly ApplicationLogService _applicationLogService;
+    private readonly RestaurantPaymentClient _restaurantPaymentClient;
 
     public OrderRegistrationService(
         WhatsappRepository repository,
         StaffNotificationService staffNotificationService,
-        ApplicationLogService applicationLogService)
+        ApplicationLogService applicationLogService,
+        RestaurantPaymentClient restaurantPaymentClient)
     {
         _repository = repository;
         _staffNotificationService = staffNotificationService;
         _applicationLogService = applicationLogService;
+        _restaurantPaymentClient = restaurantPaymentClient;
     }
 
     public async Task<OrderRegistrationResult> RegistrarPedidoAsync(
@@ -76,8 +79,15 @@ public sealed class OrderRegistrationService
             items);
 
         var result = await _repository.SaveOrderAsync(order, cancellationToken);
+        result = await TryAttachPaymentLinkAsync(
+            result,
+            order,
+            hasPendingIssue,
+            conversationPhoneNumber,
+            cancellationToken);
+
         await _applicationLogService.RecordAsync(
-            $"Order save completed. StoreId={storeId}; PhoneNumber={conversationPhoneNumber}; OrderId={result.OrderId}; SourceMessageId={sourceMessageId}; AlreadyExisted={result.AlreadyExisted}.",
+            $"Order save completed. StoreId={storeId}; PhoneNumber={conversationPhoneNumber}; OrderId={result.OrderId}; SourceMessageId={sourceMessageId}; AlreadyExisted={result.AlreadyExisted}; PaymentStatus={result.PaymentStatus}; HasCheckoutUrl={!string.IsNullOrWhiteSpace(result.PaymentCheckoutUrl)}.",
             cancellationToken);
 
         if (!result.AlreadyExisted)
@@ -101,6 +111,82 @@ public sealed class OrderRegistrationService
         await _repository.ClearConversationAsync(storeId, conversationPhoneNumber, cancellationToken);
 
         return result;
+    }
+
+    private async Task<OrderRegistrationResult> TryAttachPaymentLinkAsync(
+        OrderRegistrationResult result,
+        OrderRegistrationData order,
+        bool hasPendingIssue,
+        string conversationPhoneNumber,
+        CancellationToken cancellationToken)
+    {
+        if (result.AlreadyExisted ||
+            hasPendingIssue ||
+            result.TotalCents <= 0 ||
+            !string.Equals(result.Status, OrderStatuses.EmProducao, StringComparison.Ordinal))
+        {
+            return result;
+        }
+
+        var paymentItems = order.Items
+            .Where(item =>
+                !string.IsNullOrWhiteSpace(item.ProductId) &&
+                item.Quantity > 0 &&
+                item.TotalPriceCents.GetValueOrDefault() > 0)
+            .Select(item => new RestaurantPaymentLinkItemRequest(item.ProductId!, item.Quantity))
+            .ToArray();
+        if (paymentItems.Length == 0)
+        {
+            return result with
+            {
+                PaymentMessage = "Nao foi possivel gerar o link de pagamento porque nenhum item valido foi identificado."
+            };
+        }
+
+        var customer = await _repository.FindCustomerByPhoneAsync(order.StoreId, conversationPhoneNumber, cancellationToken);
+        if (string.IsNullOrWhiteSpace(customer?.ClienteEndereco))
+        {
+            return result with
+            {
+                PaymentMessage = "Nao foi possivel gerar o link de pagamento porque o endereco de entrega nao esta cadastrado."
+            };
+        }
+
+        try
+        {
+            var payment = await _restaurantPaymentClient.CreateWhatsAppPaymentAsync(
+                new RestaurantPaymentLinkRequest(
+                    order.StoreId,
+                    order.Id,
+                    conversationPhoneNumber,
+                    customer.ClienteNome,
+                    customer.ClienteEndereco,
+                    paymentItems),
+                cancellationToken);
+
+            await _repository.UpdateOrderPaymentAsync(order.StoreId, order.Id, payment, cancellationToken);
+            return result with
+            {
+                RestaurantOrderId = payment.OrderId,
+                PaymentStatus = payment.PaymentStatus,
+                PaymentCheckoutUrl = payment.CheckoutUrl
+            };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception error)
+        {
+            await _applicationLogService.RecordAsync(
+                $"Payment link generation failed. StoreId={order.StoreId}; PhoneNumber={conversationPhoneNumber}; OrderId={order.Id}; Error={error.Message}.",
+                cancellationToken);
+
+            return result with
+            {
+                PaymentMessage = "Pedido registrado, mas nao foi possivel gerar o link de pagamento automaticamente. Um atendente precisa revisar."
+            };
+        }
     }
 
     private static OrderItemRegistrationData CreateOrderItem(

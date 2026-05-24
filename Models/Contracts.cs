@@ -759,7 +759,30 @@ public sealed record OrderRegistrationResult(
     string OrderId,
     string Status,
     long TotalCents,
-    bool AlreadyExisted);
+    bool AlreadyExisted,
+    string? RestaurantOrderId = null,
+    string? PaymentStatus = null,
+    string? PaymentCheckoutUrl = null,
+    string? PaymentMessage = null);
+
+public sealed record RestaurantPaymentLinkRequest(
+    string StoreId,
+    string SourceOrderId,
+    string PhoneNumber,
+    string? CustomerName,
+    string DeliveryAddress,
+    IReadOnlyList<RestaurantPaymentLinkItemRequest> Items);
+
+public sealed record RestaurantPaymentLinkItemRequest(
+    string ProductId,
+    int Quantity);
+
+public sealed record RestaurantPaymentLinkResult(
+    string OrderId,
+    string PaymentStatus,
+    string? CheckoutUrl,
+    long TotalCents,
+    string TotalLabel);
 
 public sealed record UpdateOrderStatusRequest(
     [param: Required] string StoreId,
