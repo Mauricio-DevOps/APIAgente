@@ -770,6 +770,7 @@ public sealed record RestaurantPaymentLinkRequest(
     string SourceOrderId,
     string PhoneNumber,
     string? CustomerName,
+    string? CustomerEmail,
     string DeliveryAddress,
     IReadOnlyList<RestaurantPaymentLinkItemRequest> Items);
 

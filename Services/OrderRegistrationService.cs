@@ -160,6 +160,7 @@ public sealed class OrderRegistrationService
                     order.Id,
                     conversationPhoneNumber,
                     customer.ClienteNome,
+                    customer.ClienteEmail,
                     customer.ClienteEndereco,
                     paymentItems),
                 cancellationToken);
