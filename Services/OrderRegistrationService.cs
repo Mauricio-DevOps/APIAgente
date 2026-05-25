@@ -176,6 +176,17 @@ public sealed class OrderRegistrationService
         {
             throw;
         }
+        catch (ExternalApiException error)
+        {
+            await _applicationLogService.RecordAsync(
+                $"Payment link generation failed. StoreId={order.StoreId}; PhoneNumber={conversationPhoneNumber}; OrderId={order.Id}; StatusCode={error.StatusCode}; ResponseBody={error.ResponseBody}.",
+                cancellationToken);
+
+            return result with
+            {
+                PaymentMessage = "Pedido registrado, mas nao foi possivel gerar o link de pagamento automaticamente. Um atendente precisa revisar."
+            };
+        }
         catch (Exception error)
         {
             await _applicationLogService.RecordAsync(

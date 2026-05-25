@@ -108,7 +108,7 @@ public sealed class CustomerHistoryConsultationService
                 "\n\nAlguns itens precisam de revisao pela equipe antes de seguir, mas ja deixei tudo registrado.";
         }
 
-        return responseText;
+        return BuildOrderPaymentText(responseText, result);
     }
 
     public async Task<string> ConsultarHistoricoClienteAsync(
@@ -474,6 +474,27 @@ public sealed class CustomerHistoryConsultationService
         message.AppendLine();
         message.Append("Ja encaminhei seu pedido para a nossa equipe e vamos preparar tudo o mais rapido possivel. Estarei encerrando a nossa comunicacao, mas qualquer duvida, pode mandar mensagem que a gente responde.");
         return message.ToString();
+    }
+
+    private static string BuildOrderPaymentText(string responseText, OrderRegistrationResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.PaymentCheckoutUrl))
+        {
+            return string.Concat(
+                responseText.Trim(),
+                "\n\nPara finalizar, pague seu pedido por este link: ",
+                result.PaymentCheckoutUrl.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.PaymentMessage))
+        {
+            return string.Concat(
+                responseText.Trim(),
+                "\n\n",
+                result.PaymentMessage.Trim());
+        }
+
+        return responseText;
     }
 
     private static string FormatOrderSummary(string title, ActiveOrderData order)
