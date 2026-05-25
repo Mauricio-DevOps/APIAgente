@@ -15,7 +15,12 @@ builder.Services.AddHttpClient<PromptApiClient>();
 builder.Services.AddHttpClient<RestaurantPaymentClient>((serviceProvider, client) =>
 {
     var options = serviceProvider.GetRequiredService<IOptions<InternalApiOptions>>().Value;
-    client.BaseAddress = new Uri(string.IsNullOrWhiteSpace(options.BaseUrl) ? "http://localhost:5100" : options.BaseUrl);
+    var configuredBaseUrl = string.IsNullOrWhiteSpace(options.BaseUrl)
+        ? "http://localhost:5100"
+        : options.BaseUrl.Trim();
+    client.BaseAddress = Uri.TryCreate(configuredBaseUrl, UriKind.Absolute, out var baseUri)
+        ? baseUri
+        : new Uri("http://localhost:5100");
 });
 builder.Services.AddHttpClient<TwilioMessageClient>(client =>
 {
